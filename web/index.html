@@ -1,0 +1,1166 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>EcoTherm CRM — PoC</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: { sans: ['Inter','ui-sans-serif','system-ui','sans-serif'] },
+        colors: {
+          eco:  { green:'#5BC236', green2:'#4CAF50' },
+          aqua: { 100:'#E7F6FD', 300:'#4FC3F7', 500:'#29ABE2', 700:'#1C75BC', 900:'#155A91' },
+          ink:  '#0f172a',
+        },
+        boxShadow: { card:'0 1px 3px rgba(15,23,42,.06), 0 8px 24px -12px rgba(15,23,42,.12)' }
+      }
+    }
+  }
+</script>
+<style>
+  body { font-family:'Inter',sans-serif; background:#f4f7fb; color:#0f172a; }
+  .brand-gradient{ background:linear-gradient(120deg,#5BC236 0%,#29ABE2 55%,#1C75BC 100%); }
+  .brand-text{ background:linear-gradient(120deg,#5BC236,#1C75BC); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:8px}
+  [disabled]{cursor:not-allowed}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, createContext, useContext } = React;
+
+/* ============================================================
+   UTILIDADES
+   ============================================================ */
+const uid = (p='id') => p + '_' + Math.random().toString(36).slice(2,9);
+const fmtBRL = n => (n||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+const fmtDate = d => d ? new Date(d).toLocaleDateString('pt-BR') : '—';
+const addDays = (d,n) => { const x=new Date(d); x.setDate(x.getDate()+n); return x.toISOString(); };
+const daysUntil = d => Math.round((new Date(d) - new Date())/86400000);
+const nowISO = () => new Date().toISOString();
+const nextMaint = eq => eq.lastMaintenanceAt ? addDays(eq.lastMaintenanceAt, eq.maintenanceIntervalDays) : null;
+
+// mini "foto" placeholder como data URL (evita binário externo)
+const photoSVG = (label,c1,c2) => 'data:image/svg+xml;utf8,' + encodeURIComponent(
+  `<svg xmlns='http://www.w3.org/2000/svg' width='160' height='120'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='${c1}'/><stop offset='1' stop-color='${c2}'/></linearGradient></defs><rect width='160' height='120' fill='url(#g)'/><text x='80' y='64' font-family='sans-serif' font-size='13' fill='white' text-anchor='middle' opacity='.95'>${label}</text></svg>`);
+
+/* ============================================================
+   REGRA DE BTU (ver docs/specs/04-btu-rule.md)
+   ============================================================ */
+const BTU_PARAMS = { btuPorM2:600, btuPorPessoaExtra:600, btuPorEletronico:600, fatorSolTarde:200,
+  capacidades:[7000,9000,12000,18000,22000,24000,30000,36000,48000,60000] };
+function estimarBTU({ areaM2=0, people=0, electronics=0, sunExposure='manha' }){
+  const base = areaM2 * BTU_PARAMS.btuPorM2;
+  const pessoas = Math.max(0, people-2) * BTU_PARAMS.btuPorPessoaExtra;
+  const aparelhos = electronics * BTU_PARAMS.btuPorEletronico;
+  const sol = sunExposure === 'tarde' ? areaM2 * BTU_PARAMS.fatorSolTarde : 0;
+  const bruto = base + pessoas + aparelhos + sol;
+  const cap = BTU_PARAMS.capacidades.find(c => c >= bruto);
+  return { bruto, btu: cap || null, excede: !cap };
+}
+
+/* ============================================================
+   SEED (Praia Grande / litoral — maresia encurta manutenção)
+   ============================================================ */
+function seed(){
+  const tenantId = 'eco';
+  const C = (type,name,document,email,phone,bairro) =>
+    ({ id:uid('cus'), tenantId, type, name, document, email, phone, bairro, createdAt:addDays(nowISO(),-220) });
+
+  const maria   = C('PF','Maria Silva','123.456.789-00','maria.silva@email.com','(13) 99111-2233','Guilhermina, Praia Grande');
+  const padaria = C('PJ','Padaria Pão Quente','12.345.678/0001-90','contato@paoquente.com','(13) 3471-0001','Boqueirão, Praia Grande');
+  const joao    = C('PF','João Pereira','987.654.321-00','joao.pereira@email.com','(13) 99777-8899','Ocian, Praia Grande');
+  const clinica = C('PJ','Clínica Vida','98.765.432/0001-10','adm@clinicavida.com','(13) 3591-2020','Tupi, Praia Grande');
+  const carlos  = C('PF','Carlos Mendes','321.654.987-00','carlos.m@email.com','(13) 99333-4455','Itararé, São Vicente');
+  const customers = [maria,padaria,joao,clinica,carlos];
+
+  const EQ = (cus, brand, model, btu, type, instDaysAgo, intervalDays, lastMaintDaysAgo) => ({
+    id:uid('eq'), tenantId, customerId:cus.id, siteId:null, brand, model, btu, type,
+    installedAt: addDays(nowISO(), -instDaysAgo),
+    warrantyUntil: addDays(nowISO(), 365 - instDaysAgo),
+    lastMaintenanceAt: addDays(nowISO(), -lastMaintDaysAgo),
+    maintenanceIntervalDays: intervalDays, status:'ativo'
+  });
+  const equipment = [
+    EQ(maria,'Fujitsu','Inverter 12k',12000,'split',200,120,200),   // vencida
+    EQ(padaria,'Daikin','Sky Cassete 36k',36000,'cassete',150,90,100), // vencida
+    EQ(padaria,'LG','Dual Inverter 18k',18000,'split',150,90,100),   // vencida
+    EQ(joao,'Springer','Midea 9k',9000,'split',60,180,60),           // ok
+    EQ(clinica,'Midea','Multi Split 48k',48000,'multi',70,90,70),    // vence em ~20d
+    EQ(carlos,'Samsung','WindFree 22k',22000,'split',30,150,30),     // ok
+  ];
+
+  // Leads em estados variados
+  const leads = [
+    { id:uid('lead'), tenantId, protocol:'ECO-7F3K', customerId:null,
+      snapshotName:'Restaurante Maré Alta', snapshotEmail:'contato@marealta.com', snapshotPhone:'(13) 99888-1212', snapshotType:'PJ',
+      serviceType:'instalacao',
+      environment:{ areaM2:45, people:30, electronics:4, sunExposure:'tarde', ceilingHeight:3, notes:'Salão com movimento alto no almoço, cozinha ao lado.' },
+      estimatedBtu: estimarBTU({areaM2:45,people:30,electronics:4,sunExposure:'tarde'}).btu,
+      media:[ {kind:'foto',url:photoSVG('Salão','#29ABE2','#1C75BC')},{kind:'foto',url:photoSVG('Parede','#5BC236','#29ABE2')} ],
+      status:'novo', createdAt: addDays(nowISO(),-1) },
+
+    { id:uid('lead'), tenantId, protocol:'ECO-9B2M', customerId:null,
+      snapshotName:'Ana Souza', snapshotEmail:'ana.souza@email.com', snapshotPhone:'(13) 99444-5566', snapshotType:'PF',
+      serviceType:'manutencao',
+      environment:{ notes:'Split da sala não está gelando como antes.' },
+      estimatedBtu:null, media:[], status:'novo', createdAt: addDays(nowISO(),-2) },
+
+    { id:uid('lead'), tenantId, protocol:'ECO-4K8T', customerId:null,
+      snapshotName:'Pedro Lima', snapshotEmail:'pedro.lima@email.com', snapshotPhone:'(13) 99222-3344', snapshotType:'PF',
+      serviceType:'instalacao',
+      environment:{ areaM2:18, people:3, electronics:2, sunExposure:'manha', ceilingHeight:2.6, notes:'Quarto de casal.' },
+      estimatedBtu: estimarBTU({areaM2:18,people:3,electronics:2,sunExposure:'manha'}).btu,
+      media:[], status:'orcamento_enviado', createdAt: addDays(nowISO(),-5) },
+  ];
+
+  // Quote do Pedro (orçamento enviado) com breakdown
+  const pedroLead = leads[2];
+  const quotes = [
+    { id:uid('quote'), tenantId, leadId:pedroLead.id, customerId:null, status:'enviado',
+      items:[
+        { id:uid('li'), category:'equipamento', description:'Split Inverter 12.000 BTU', amount:1800 },
+        { id:uid('li'), category:'mao_de_obra', description:'Instalação e carga de gás', amount:600 },
+        { id:uid('li'), category:'local', description:'Infra: furo, suportes, 3m de tubulação', amount:400 },
+      ],
+      total:2800, validUntil:addDays(nowISO(),10), createdAt:addDays(nowISO(),-4) },
+  ];
+
+  // OS: concluída (Maria, histórico) + agendadas nesta semana
+  const serviceOrders = [
+    { id:uid('os'), tenantId, customerId:maria.id, quoteId:null, equipmentId:equipment[0].id,
+      serviceType:'instalacao', status:'concluido', scheduledFor:addDays(nowISO(),-200),
+      completedAt:addDays(nowISO(),-200), amount:2650, notes:'Instalação split 12k na sala.',
+      reminderEnabled:true, reminderLeadDays:7, reminderChannel:'email' },
+
+    { id:uid('os'), tenantId, customerId:joao.id, quoteId:null, equipmentId:equipment[3].id,
+      serviceType:'manutencao', status:'agendado', scheduledFor:addDays(nowISO(),2),
+      completedAt:null, amount:220, notes:'Limpeza e higienização.', reminderEnabled:false, reminderLeadDays:7, reminderChannel:'email' },
+
+    { id:uid('os'), tenantId, customerId:clinica.id, quoteId:null, equipmentId:equipment[4].id,
+      serviceType:'manutencao', status:'agendado', scheduledFor:addDays(nowISO(),4),
+      completedAt:null, amount:480, notes:'Manutenção preventiva multi split.', reminderEnabled:false, reminderLeadDays:7, reminderChannel:'email' },
+
+    { id:uid('os'), tenantId, customerId:carlos.id, quoteId:null, equipmentId:equipment[5].id,
+      serviceType:'instalacao', status:'concluido', scheduledFor:addDays(nowISO(),-30),
+      completedAt:addDays(nowISO(),-30), amount:2450, notes:'Instalação split WindFree 22k.',
+      reminderEnabled:true, reminderLeadDays:7, reminderChannel:'whatsapp' },
+  ];
+
+  const reminders = [
+    { id:uid('rem'), tenantId, customerId:maria.id, equipmentId:equipment[0].id, serviceOrderId:serviceOrders[0].id,
+      dueAt: nextMaint(equipment[0]), leadDays:7, channel:'email', status:'agendado' },
+  ];
+
+  const tenant = { id:tenantId, name:'EcoTherm', slug:'ecotherm',
+    tagline:'Soluções Inteligentes em Climatização e Eficiência Energética',
+    city:'Praia Grande', region:'Litoral Sul — SP' };
+
+  return { v:1, tenant, customers, equipment, leads, quotes, serviceOrders, reminders };
+}
+
+/* ============================================================
+   STORE (localStorage)
+   ============================================================ */
+const KEY = 'ecotherm_db_v1';
+function loadDB(){ try{ const raw=localStorage.getItem(KEY); if(raw) return JSON.parse(raw);}catch(e){} const s=seed(); localStorage.setItem(KEY,JSON.stringify(s)); return s; }
+function saveDB(db){ localStorage.setItem(KEY, JSON.stringify(db)); }
+
+const Store = createContext(null);
+function useStore(){ return useContext(Store); }
+function StoreProvider({children}){
+  const [db,setDb] = useState(loadDB);
+  const [toasts,setToasts] = useState([]);
+  const mutate = fn => setDb(prev => { const next = fn(structuredClone(prev)); saveDB(next); return next; });
+  const toast = (msg,kind='ok') => { const id=uid('t'); setToasts(t=>[...t,{id,msg,kind}]); setTimeout(()=>setToasts(t=>t.filter(x=>x.id!==id)),3800); };
+  const reset = () => { localStorage.removeItem(KEY); const s=seed(); saveDB(s); setDb(s); toast('Dados resetados.'); };
+  return <Store.Provider value={{db,mutate,toast,reset}}>
+    {children}
+    <div className="fixed bottom-4 right-4 z-50 space-y-2">
+      {toasts.map(t=>(
+        <div key={t.id} className={"px-4 py-3 rounded-xl shadow-card text-sm text-white flex items-center gap-2 "+(t.kind==='ok'?'bg-aqua-700':'bg-slate-800')}>
+          <Ic n="check"/> {t.msg}
+        </div>
+      ))}
+    </div>
+  </Store.Provider>;
+}
+
+/* ============================================================
+   ÍCONES (inline)
+   ============================================================ */
+const PATHS = {
+  check:'M20 6 9 17l-5-5', home:'M3 10.5 12 3l9 7.5M5 9.5V21h14V9.5',
+  users:'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75',
+  inbox:'M22 12h-6l-2 3h-4l-2-3H2M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z',
+  file:'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6',
+  bell:'M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0',
+  plus:'M12 5v14M5 12h14', snow:'M12 2v20M4.93 7l14.14 10M19.07 7 4.93 17',
+  wrench:'M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z',
+  back:'M19 12H5M12 19l-7-7 7-7', chevron:'M9 18l6-6-6-6', spark:'M12 3l1.9 5.8L20 10l-6.1 1.2L12 17l-1.9-5.8L4 10l6.1-1.2z',
+  user:'M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8',
+  clock:'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 6v6l4 2', money:'M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6',
+  pin:'M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0zM12 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6',
+  phone:'M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.9.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z',
+  mail:'M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM22 6l-10 7L2 6',
+  logout:'M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9',
+  search:'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM21 21l-4.3-4.3', alert:'M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
+};
+function Ic({n,className='w-4 h-4',stroke=2}){ const d=PATHS[n]||''; return (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round">
+    {d.split('M').filter(Boolean).map((seg,i)=><path key={i} d={'M'+seg}/>)}
+  </svg>); }
+
+/* ============================================================
+   LOGO
+   ============================================================ */
+function Logo({ size=40, light=false, showText=true }){
+  return (
+    <div className="flex items-center gap-2.5 select-none">
+      <svg width={size} height={size} viewBox="0 0 48 48" aria-label="EcoTherm">
+        <defs>
+          <linearGradient id="egrad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stopColor="#5BC236"/><stop offset=".55" stopColor="#29ABE2"/><stop offset="1" stopColor="#1C75BC"/>
+          </linearGradient>
+        </defs>
+        <circle cx="24" cy="24" r="22" fill="url(#egrad)"/>
+        {/* termômetro */}
+        <rect x="21.4" y="12" width="5.2" height="19" rx="2.6" fill="#fff"/>
+        <circle cx="24" cy="33" r="5.2" fill="#fff"/>
+        <rect x="22.7" y="20" width="2.6" height="11.5" rx="1.3" fill="#5BC236"/>
+        <circle cx="24" cy="33" r="3" fill="#5BC236"/>
+        {/* floco */}
+        <g stroke="#fff" strokeWidth="1.5" strokeLinecap="round" opacity=".95">
+          <line x1="34" y1="11" x2="34" y2="20"/><line x1="29.6" y1="15.5" x2="38.4" y2="15.5"/>
+          <line x1="31" y1="12.5" x2="37" y2="18.5"/><line x1="37" y1="12.5" x2="31" y2="18.5"/>
+        </g>
+      </svg>
+      {showText && (
+        <div className="leading-none">
+          <div className="font-extrabold text-xl tracking-tight">
+            <span style={{color: light?'#CFF3B9':'#5BC236'}}>Eco</span><span style={{color: light?'#fff':'#1C75BC'}}>Therm</span>
+          </div>
+          <div className={"text-[10px] font-medium "+(light?'text-white/80':'text-slate-400')}>Climatização & Eficiência</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   COMPONENTES BÁSICOS
+   ============================================================ */
+const Btn = ({children,variant='primary',className='',...p}) => {
+  const v = {
+    primary:'brand-gradient text-white hover:opacity-95 shadow-card',
+    soft:'bg-aqua-100 text-aqua-700 hover:bg-aqua-300/40',
+    ghost:'text-slate-600 hover:bg-slate-100',
+    outline:'border border-slate-200 text-slate-700 hover:bg-slate-50 bg-white',
+    danger:'bg-red-50 text-red-600 hover:bg-red-100',
+  }[variant];
+  return <button className={`px-4 py-2.5 rounded-xl text-sm font-semibold transition disabled:opacity-40 ${v} ${className}`} {...p}>{children}</button>;
+};
+const Field = ({label,children,hint}) => (
+  <label className="block">
+    <span className="text-sm font-medium text-slate-700">{label}</span>
+    <div className="mt-1.5">{children}</div>
+    {hint && <span className="text-xs text-slate-400 mt-1 block">{hint}</span>}
+  </label>
+);
+const inputCls = "w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-aqua-300 focus:border-aqua-300";
+const Input = (p)=> <input className={inputCls} {...p}/>;
+const Textarea = (p)=> <textarea className={inputCls} {...p}/>;
+const Select = ({children,...p})=> <select className={inputCls} {...p}>{children}</select>;
+const Card = ({children,className=''}) => <div className={"bg-white rounded-2xl shadow-card "+className}>{children}</div>;
+const Badge = ({children,tone='slate'}) => {
+  const t={ slate:'bg-slate-100 text-slate-600', green:'bg-green-100 text-green-700', blue:'bg-aqua-100 text-aqua-700',
+    amber:'bg-amber-100 text-amber-700', red:'bg-red-100 text-red-700', violet:'bg-violet-100 text-violet-700' }[tone];
+  return <span className={"inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold "+t}>{children}</span>;
+};
+
+const SERVICE_LABEL = { instalacao:'Instalação', manutencao:'Manutenção', outros:'Outros' };
+const LEAD_STATUS = {
+  novo:{label:'Novo',tone:'blue'}, qualificado:{label:'Qualificado',tone:'violet'},
+  orcamento_enviado:{label:'Orçamento enviado',tone:'amber'}, aprovado:{label:'Aprovado',tone:'green'}, recusado:{label:'Recusado',tone:'red'},
+};
+
+/* ============================================================
+   LADO CLIENTE (público)
+   ============================================================ */
+function ClientSite({ goProvider }){
+  const [view,setView] = useState('home'); // home | form | done | track
+  const [lastProtocol,setLastProtocol] = useState(null);
+
+  return (
+    <div className="min-h-screen">
+      <header className="bg-white border-b border-slate-100 sticky top-0 z-20">
+        <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
+          <button onClick={()=>setView('home')}><Logo/></button>
+          <div className="flex items-center gap-2">
+            <Btn variant="ghost" onClick={()=>setView('track')}>Acompanhar pedido</Btn>
+            <Btn variant="outline" onClick={goProvider}><span className="inline-flex items-center gap-1.5"><Ic n="user"/>Área do prestador</span></Btn>
+          </div>
+        </div>
+      </header>
+
+      {view==='home' && <ClientHome onStart={()=>setView('form')} onTrack={()=>setView('track')}/>}
+      {view==='form' && <QuoteForm onDone={(protocol)=>{setLastProtocol(protocol);setView('done');}} onCancel={()=>setView('home')}/>}
+      {view==='done' && <QuoteDone protocol={lastProtocol} onTrack={()=>setView('track')} onHome={()=>setView('home')}/>}
+      {view==='track' && <TrackOrder initial={lastProtocol} onHome={()=>setView('home')}/>}
+
+      <footer className="max-w-5xl mx-auto px-4 py-10 text-center text-xs text-slate-400">
+        EcoTherm — Praia Grande, Litoral Sul SP · PoC demonstrativo
+      </footer>
+    </div>
+  );
+}
+
+function ClientHome({onStart,onTrack}){
+  return (
+    <div>
+      <section className="brand-gradient text-white">
+        <div className="max-w-5xl mx-auto px-4 py-16 md:py-20">
+          <div className="max-w-2xl">
+            <Badge tone="green">Orçamento sem compromisso</Badge>
+            <h1 className="text-3xl md:text-4xl font-extrabold mt-4 leading-tight">Seu ambiente na temperatura certa, com eficiência.</h1>
+            <p className="mt-4 text-white/90 text-lg">Conte o que você precisa — instalação, manutenção ou outro serviço — e receba um pré-orçamento com estimativa de capacidade (BTU) na hora. A EcoTherm retorna o contato em seguida.</p>
+            <div className="mt-7 flex flex-wrap gap-3">
+              <Btn variant="soft" className="!bg-white !text-aqua-700 text-base px-6 py-3" onClick={onStart}><span className="inline-flex items-center gap-2"><Ic n="plus"/>Solicitar pré-orçamento</span></Btn>
+              <Btn variant="ghost" className="!text-white border border-white/40" onClick={onTrack}>Acompanhar meu pedido</Btn>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section className="max-w-5xl mx-auto px-4 py-12 grid md:grid-cols-3 gap-5">
+        {[['snow','Instalação','Dimensionamento de BTU e instalação completa, com infra e carga de gás.'],
+          ['wrench','Manutenção','Limpeza, higienização e revisão preventiva — essencial no litoral, pela maresia.'],
+          ['spark','Eficiência','Recomendações para gastar menos energia mantendo o conforto.']].map(([ic,t,d])=>(
+          <Card key={t} className="p-6">
+            <div className="w-11 h-11 rounded-xl brand-gradient text-white flex items-center justify-center"><Ic n={ic} className="w-5 h-5"/></div>
+            <h3 className="font-bold mt-4">{t}</h3>
+            <p className="text-sm text-slate-500 mt-1.5">{d}</p>
+          </Card>
+        ))}
+      </section>
+    </div>
+  );
+}
+
+function QuoteForm({onDone,onCancel}){
+  const { mutate, toast, db } = useStore();
+  const [step,setStep] = useState(1);
+  const [serviceType,setServiceType] = useState(null);
+  const [env,setEnv] = useState({ areaM2:'', people:'', electronics:'', sunExposure:'manha', ceilingHeight:'', notes:'' });
+  const [media,setMedia] = useState([]);
+  const [contact,setContact] = useState({ name:'', type:'PF', document:'', email:'', phone:'' });
+
+  const btu = useMemo(()=>{
+    if(serviceType!=='instalacao') return null;
+    return estimarBTU({ areaM2:+env.areaM2||0, people:+env.people||0, electronics:+env.electronics||0, sunExposure:env.sunExposure });
+  },[serviceType,env]);
+
+  const onFiles = e => {
+    const files=[...e.target.files].slice(0,4);
+    Promise.all(files.map(f=>new Promise(res=>{ const r=new FileReader(); r.onload=()=>res({kind:f.type.startsWith('video')?'video':'foto',url:r.result}); r.readAsDataURL(f); })))
+      .then(arr=>setMedia(m=>[...m,...arr].slice(0,6)));
+  };
+
+  const submit = () => {
+    if(!contact.name || (!contact.email && !contact.phone)){ toast('Informe nome e ao menos um contato.','warn'); return; }
+    const protocol = 'ECO-' + Math.random().toString(36).slice(2,6).toUpperCase();
+    const lead = {
+      id:uid('lead'), tenantId:'eco', protocol, customerId:null,
+      snapshotName:contact.name, snapshotEmail:contact.email, snapshotPhone:contact.phone, snapshotType:contact.type,
+      serviceType,
+      environment: serviceType==='instalacao'
+        ? { areaM2:+env.areaM2||0, people:+env.people||0, electronics:+env.electronics||0, sunExposure:env.sunExposure, ceilingHeight:+env.ceilingHeight||0, notes:env.notes }
+        : { notes:env.notes },
+      estimatedBtu: btu? btu.btu : null, media, status:'novo', createdAt: nowISO(),
+    };
+    mutate(d=>{ d.leads.unshift(lead); return d; });
+    toast('E-mail de confirmação enviado (simulado).');
+    onDone(protocol);
+  };
+
+  const stepOk = step===1 ? !!serviceType : true;
+
+  return (
+    <div className="max-w-2xl mx-auto px-4 py-10">
+      <div className="flex items-center gap-2 mb-6">
+        {[1,2,3].map(n=>(
+          <div key={n} className="flex-1 h-1.5 rounded-full" style={{background: n<=step?'#29ABE2':'#e2e8f0'}}/>
+        ))}
+      </div>
+
+      {step===1 && (
+        <Card className="p-7">
+          <h2 className="text-xl font-bold">Qual serviço você precisa?</h2>
+          <div className="grid sm:grid-cols-3 gap-3 mt-5">
+            {[['instalacao','snow','Instalação'],['manutencao','wrench','Manutenção'],['outros','spark','Outros']].map(([v,ic,t])=>(
+              <button key={v} onClick={()=>setServiceType(v)}
+                className={"p-5 rounded-2xl border-2 text-left transition "+(serviceType===v?'border-aqua-500 bg-aqua-100/50':'border-slate-200 hover:border-aqua-300')}>
+                <div className="w-10 h-10 rounded-xl brand-gradient text-white flex items-center justify-center"><Ic n={ic} className="w-5 h-5"/></div>
+                <div className="font-bold mt-3">{t}</div>
+              </button>
+            ))}
+          </div>
+          <div className="flex justify-between mt-7">
+            <Btn variant="ghost" onClick={onCancel}>Cancelar</Btn>
+            <Btn onClick={()=>setStep(2)} disabled={!stepOk}>Continuar</Btn>
+          </div>
+        </Card>
+      )}
+
+      {step===2 && (
+        <Card className="p-7">
+          <h2 className="text-xl font-bold">Sobre o ambiente</h2>
+          {serviceType==='instalacao' ? (
+            <>
+              <div className="grid sm:grid-cols-2 gap-4 mt-5">
+                <Field label="Área do ambiente (m²)"><Input type="number" value={env.areaM2} onChange={e=>setEnv({...env,areaM2:e.target.value})} placeholder="ex: 20"/></Field>
+                <Field label="Pessoas no ambiente"><Input type="number" value={env.people} onChange={e=>setEnv({...env,people:e.target.value})} placeholder="ex: 4"/></Field>
+                <Field label="Eletrônicos que esquentam" hint="TV, computador, forno..."><Input type="number" value={env.electronics} onChange={e=>setEnv({...env,electronics:e.target.value})} placeholder="ex: 2"/></Field>
+                <Field label="Exposição ao sol">
+                  <Select value={env.sunExposure} onChange={e=>setEnv({...env,sunExposure:e.target.value})}>
+                    <option value="manha">Sol da manhã / sombra</option>
+                    <option value="tarde">Sol da tarde (mais quente)</option>
+                  </Select>
+                </Field>
+              </div>
+              {btu && +env.areaM2>0 && (
+                <div className="mt-5 p-4 rounded-xl bg-aqua-100/60 border border-aqua-300/40">
+                  <div className="text-sm text-aqua-700 font-semibold flex items-center gap-2"><Ic n="snow"/>Estimativa de capacidade</div>
+                  <div className="text-2xl font-extrabold text-aqua-900 mt-1">
+                    {btu.excede ? 'Múltiplas unidades' : (btu.btu? btu.btu.toLocaleString('pt-BR')+' BTU/h' : '—')}
+                  </div>
+                  <p className="text-xs text-slate-500 mt-1">Estimativa automática de referência. <b>Não substitui</b> a avaliação técnica da EcoTherm.</p>
+                </div>
+              )}
+            </>
+          ) : (
+            <p className="text-sm text-slate-500 mt-2">Descreva abaixo o que está acontecendo ou o que você precisa.</p>
+          )}
+          <div className="mt-4">
+            <Field label="Descrição / observações">
+              <Textarea rows={3} value={env.notes} onChange={e=>setEnv({...env,notes:e.target.value})} placeholder="Conte os detalhes que ajudarem..."/>
+            </Field>
+          </div>
+          <div className="mt-4">
+            <Field label="Fotos ou vídeo do ambiente (opcional)">
+              <label className="flex items-center gap-2 px-4 py-3 rounded-xl border-2 border-dashed border-slate-200 text-sm text-slate-500 cursor-pointer hover:border-aqua-300 w-max">
+                <Ic n="plus"/> Adicionar arquivos
+                <input type="file" accept="image/*,video/*" multiple className="hidden" onChange={onFiles}/>
+              </label>
+              {media.length>0 && (
+                <div className="flex gap-2 mt-3 flex-wrap">
+                  {media.map((m,i)=>(
+                    <div key={i} className="relative">
+                      <img src={m.url} className="w-20 h-16 object-cover rounded-lg border border-slate-200"/>
+                      <button onClick={()=>setMedia(media.filter((_,j)=>j!==i))} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-slate-800 text-white rounded-full text-xs">×</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Field>
+          </div>
+          <div className="flex justify-between mt-7">
+            <Btn variant="ghost" onClick={()=>setStep(1)}>Voltar</Btn>
+            <Btn onClick={()=>setStep(3)}>Continuar</Btn>
+          </div>
+        </Card>
+      )}
+
+      {step===3 && (
+        <Card className="p-7">
+          <h2 className="text-xl font-bold">Seus dados de contato</h2>
+          <div className="grid sm:grid-cols-2 gap-4 mt-5">
+            <Field label="Nome / Empresa"><Input value={contact.name} onChange={e=>setContact({...contact,name:e.target.value})} placeholder="Seu nome ou razão social"/></Field>
+            <Field label="Tipo">
+              <Select value={contact.type} onChange={e=>setContact({...contact,type:e.target.value})}>
+                <option value="PF">Pessoa Física</option><option value="PJ">Pessoa Jurídica</option>
+              </Select>
+            </Field>
+            <Field label={contact.type==='PF'?'CPF (opcional)':'CNPJ (opcional)'}><Input value={contact.document} onChange={e=>setContact({...contact,document:e.target.value})}/></Field>
+            <Field label="Telefone / WhatsApp"><Input value={contact.phone} onChange={e=>setContact({...contact,phone:e.target.value})} placeholder="(13) 99999-9999"/></Field>
+            <Field label="E-mail"><Input value={contact.email} onChange={e=>setContact({...contact,email:e.target.value})} placeholder="voce@email.com"/></Field>
+          </div>
+          <div className="flex justify-between mt-7">
+            <Btn variant="ghost" onClick={()=>setStep(2)}>Voltar</Btn>
+            <Btn onClick={submit}><span className="inline-flex items-center gap-2"><Ic n="check"/>Enviar pedido</span></Btn>
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function QuoteDone({protocol,onTrack,onHome}){
+  return (
+    <div className="max-w-xl mx-auto px-4 py-16 text-center">
+      <div className="w-16 h-16 rounded-2xl brand-gradient text-white flex items-center justify-center mx-auto"><Ic n="check" className="w-8 h-8"/></div>
+      <h2 className="text-2xl font-extrabold mt-5">Pedido enviado!</h2>
+      <p className="text-slate-500 mt-2">Enviamos uma confirmação por e-mail/WhatsApp <span className="text-slate-400">(simulado neste PoC)</span>. A EcoTherm entrará em contato em breve.</p>
+      <div className="mt-6 p-5 rounded-2xl bg-aqua-100/60 border border-aqua-300/40">
+        <div className="text-sm text-slate-500">Seu número de protocolo</div>
+        <div className="text-3xl font-extrabold text-aqua-900 tracking-wider mt-1">{protocol}</div>
+        <div className="text-xs text-slate-400 mt-1">Anote para acompanhar seu pedido.</div>
+      </div>
+      <div className="flex gap-3 justify-center mt-7">
+        <Btn variant="outline" onClick={onHome}>Voltar ao início</Btn>
+        <Btn onClick={onTrack}>Acompanhar pedido</Btn>
+      </div>
+    </div>
+  );
+}
+
+function TrackOrder({initial,onHome}){
+  const { db } = useStore();
+  const [q,setQ] = useState(initial||'');
+  const [found,setFound] = useState(null);
+  const [searched,setSearched] = useState(false);
+  const search = () => {
+    const t=q.trim().toLowerCase();
+    const lead = db.leads.find(l => l.protocol.toLowerCase()===t || (l.snapshotEmail||'').toLowerCase()===t || (l.snapshotPhone||'').replace(/\D/g,'')===t.replace(/\D/g,'') && t);
+    setFound(lead||null); setSearched(true);
+  };
+  const steps = ['novo','qualificado','orcamento_enviado','aprovado'];
+  return (
+    <div className="max-w-xl mx-auto px-4 py-12">
+      <h2 className="text-2xl font-extrabold">Acompanhar pedido</h2>
+      <p className="text-slate-500 mt-1 text-sm">Informe seu protocolo (ex: ECO-7F3K) ou e-mail/telefone.</p>
+      <div className="flex gap-2 mt-4">
+        <Input value={q} onChange={e=>setQ(e.target.value)} placeholder="ECO-XXXX ou e-mail/telefone" onKeyDown={e=>e.key==='Enter'&&search()}/>
+        <Btn onClick={search}>Buscar</Btn>
+      </div>
+      {searched && !found && <Card className="p-6 mt-5 text-center text-slate-500 text-sm">Nenhum pedido encontrado. Confira o protocolo.</Card>}
+      {found && (
+        <Card className="p-6 mt-5">
+          <div className="flex items-center justify-between">
+            <div><div className="font-bold">{found.snapshotName}</div><div className="text-xs text-slate-400">{SERVICE_LABEL[found.serviceType]} · {found.protocol}</div></div>
+            <Badge tone={LEAD_STATUS[found.status]?.tone}>{LEAD_STATUS[found.status]?.label}</Badge>
+          </div>
+          <div className="mt-6 space-y-0">
+            {steps.map((s,i)=>{
+              const done = steps.indexOf(found.status)>=i || found.status==='aprovado';
+              const current = found.status===s;
+              return (
+                <div key={s} className="flex items-start gap-3">
+                  <div className="flex flex-col items-center">
+                    <div className={"w-7 h-7 rounded-full flex items-center justify-center text-white "+(done?'brand-gradient':'bg-slate-200')}>{done?<Ic n="check" className="w-4 h-4"/>:<span className="text-xs">{i+1}</span>}</div>
+                    {i<steps.length-1 && <div className="w-0.5 h-8" style={{background: done?'#29ABE2':'#e2e8f0'}}/>}
+                  </div>
+                  <div className={"pt-0.5 "+(current?'font-bold':'')}>{LEAD_STATUS[s].label}</div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+      <Btn variant="ghost" className="mt-5" onClick={onHome}><span className="inline-flex items-center gap-1.5"><Ic n="back"/>Início</span></Btn>
+    </div>
+  );
+}
+
+/* ============================================================
+   LADO PRESTADOR (painel)
+   ============================================================ */
+function ProviderApp({ goClient }){
+  const [page,setPage] = useState('dashboard');
+  const [ctx,setCtx] = useState(null); // { leadId } | { customerId }
+  const open = (p,c=null)=>{ setPage(p); setCtx(c); };
+
+  const nav = [
+    ['dashboard','home','Início'],
+    ['leads','inbox','Leads'],
+    ['customers','users','Clientes'],
+    ['askai','spark','Ask to AI'],
+  ];
+
+  return (
+    <div className="min-h-screen flex">
+      {/* sidebar */}
+      <aside className="w-60 bg-white border-r border-slate-100 flex flex-col fixed h-full">
+        <div className="h-16 flex items-center px-5 border-b border-slate-100"><Logo size={34}/></div>
+        <nav className="p-3 space-y-1 flex-1">
+          {nav.map(([p,ic,label])=>(
+            <button key={p} onClick={()=>open(p)}
+              className={"w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-semibold transition "+(page===p?'brand-gradient text-white shadow-card':'text-slate-600 hover:bg-slate-100')}>
+              <Ic n={ic}/> {label}
+              {p==='askai' && <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-white/20">em breve</span>}
+            </button>
+          ))}
+        </nav>
+        <div className="p-3 border-t border-slate-100 space-y-1">
+          <button onClick={goClient} className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm text-slate-600 hover:bg-slate-100"><Ic n="back"/>Ver site público</button>
+          <ResetButton/>
+        </div>
+      </aside>
+
+      <main className="flex-1 ml-60">
+        <div className="max-w-6xl mx-auto px-6 py-7">
+          {page==='dashboard' && <Dashboard open={open}/>}
+          {page==='leads' && !ctx && <LeadsList open={open}/>}
+          {page==='leads' && ctx?.leadId && <LeadDetail leadId={ctx.leadId} open={open}/>}
+          {page==='quote' && <QuoteBuilder leadId={ctx.leadId} open={open}/>}
+          {page==='customers' && !ctx && <CustomersList open={open}/>}
+          {page==='customers' && ctx?.customerId && <CustomerChart customerId={ctx.customerId} open={open}/>}
+          {page==='askai' && <AskAI/>}
+        </div>
+      </main>
+    </div>
+  );
+}
+
+function ResetButton(){
+  const { reset } = useStore();
+  return <button onClick={()=>{ if(confirm('Resetar todos os dados do PoC para o estado inicial?')) reset(); }}
+    className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm text-slate-400 hover:bg-slate-100"><Ic n="logout"/>Resetar dados</button>;
+}
+
+// ----- helpers de dados derivados -----
+function useDerived(){
+  const { db } = useStore();
+  return useMemo(()=>{
+    const custById = Object.fromEntries(db.customers.map(c=>[c.id,c]));
+    const weekOrders = db.serviceOrders.filter(o=>o.status!=='concluido' && o.scheduledFor && daysUntil(o.scheduledFor)>=-1 && daysUntil(o.scheduledFor)<=7);
+    const monthEarnings = db.serviceOrders.filter(o=>o.status==='concluido' && daysUntil(o.completedAt)>=-31).reduce((s,o)=>s+o.amount,0)
+      + db.quotes.filter(q=>q.status==='aprovado').reduce((s,q)=>s+q.total,0);
+    const attention = db.equipment.map(eq=>{
+      const nm = nextMaint(eq); const du = nm? daysUntil(nm): null;
+      return { eq, nm, du, customer:custById[eq.customerId] };
+    }).filter(x=>x.du!==null && x.du<=30).sort((a,b)=>a.du-b.du);
+    const newLeads = db.leads.filter(l=>l.status==='novo');
+    return { custById, weekOrders, monthEarnings, attention, newLeads };
+  },[db]);
+}
+
+function Dashboard({open}){
+  const { db } = useStore();
+  const { weekOrders, monthEarnings, attention, newLeads, custById } = useDerived();
+  const kpis = [
+    ['Leads novos', newLeads.length, 'inbox','blue'],
+    ['Atendimentos na semana', weekOrders.length, 'clock','violet'],
+    ['Ganhos (30 dias)', fmtBRL(monthEarnings), 'money','green'],
+    ['Precisam de atenção', attention.length, 'alert','amber'],
+  ];
+  return (
+    <div>
+      <div className="flex items-center justify-between">
+        <div><h1 className="text-2xl font-extrabold">Olá, EcoTherm 👋</h1><p className="text-slate-500 text-sm">Resumo da sua operação em Praia Grande.</p></div>
+      </div>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+        {kpis.map(([t,v,ic,tone])=>(
+          <Card key={t} className="p-5">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-slate-500">{t}</span>
+              <Badge tone={tone}><Ic n={ic} className="w-3.5 h-3.5"/></Badge>
+            </div>
+            <div className="text-2xl font-extrabold mt-2">{v}</div>
+          </Card>
+        ))}
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-5 mt-5">
+        {/* atenção */}
+        <Card className="p-5">
+          <div className="flex items-center gap-2 font-bold"><Ic n="alert" className="w-4 h-4 text-amber-500"/>Precisam de atenção</div>
+          <p className="text-xs text-slate-400 mb-3">Manutenção vencida ou vencendo (maresia encurta o intervalo).</p>
+          <div className="space-y-2">
+            {attention.length===0 && <div className="text-sm text-slate-400 py-4 text-center">Tudo em dia.</div>}
+            {attention.map(({eq,du,customer})=>(
+              <button key={eq.id} onClick={()=>open('customers',{customerId:customer.id})} className="w-full flex items-center justify-between p-3 rounded-xl hover:bg-slate-50 text-left">
+                <div>
+                  <div className="font-semibold text-sm">{customer?.name}</div>
+                  <div className="text-xs text-slate-400">{eq.brand} {eq.model} · {eq.btu.toLocaleString('pt-BR')} BTU</div>
+                </div>
+                <Badge tone={du<0?'red':'amber'}>{du<0? `${Math.abs(du)}d atrasada` : `vence em ${du}d`}</Badge>
+              </button>
+            ))}
+          </div>
+        </Card>
+
+        {/* semana */}
+        <Card className="p-5">
+          <div className="flex items-center gap-2 font-bold"><Ic n="clock" className="w-4 h-4 text-violet-500"/>Atendimentos da semana</div>
+          <p className="text-xs text-slate-400 mb-3">Ordens de serviço agendadas.</p>
+          <div className="space-y-2">
+            {weekOrders.length===0 && <div className="text-sm text-slate-400 py-4 text-center">Nada agendado.</div>}
+            {weekOrders.map(o=>(
+              <button key={o.id} onClick={()=>open('customers',{customerId:o.customerId})} className="w-full flex items-center justify-between p-3 rounded-xl hover:bg-slate-50 text-left">
+                <div>
+                  <div className="font-semibold text-sm">{custById[o.customerId]?.name}</div>
+                  <div className="text-xs text-slate-400">{SERVICE_LABEL[o.serviceType]} · {fmtDate(o.scheduledFor)}</div>
+                </div>
+                <Badge tone="blue">{fmtBRL(o.amount)}</Badge>
+              </button>
+            ))}
+          </div>
+        </Card>
+      </div>
+
+      {/* novos leads */}
+      <Card className="p-5 mt-5">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2 font-bold"><Ic n="inbox" className="w-4 h-4 text-aqua-500"/>Novos leads</div>
+          <Btn variant="ghost" onClick={()=>open('leads')}>Ver todos</Btn>
+        </div>
+        <div className="space-y-2">
+          {newLeads.length===0 && <div className="text-sm text-slate-400 py-4 text-center">Sem novos leads.</div>}
+          {newLeads.map(l=>(
+            <button key={l.id} onClick={()=>open('leads',{leadId:l.id})} className="w-full flex items-center justify-between p-3 rounded-xl hover:bg-slate-50 text-left">
+              <div>
+                <div className="font-semibold text-sm">{l.snapshotName} <span className="text-xs text-slate-400">({l.snapshotType})</span></div>
+                <div className="text-xs text-slate-400">{SERVICE_LABEL[l.serviceType]} · {l.protocol} · {fmtDate(l.createdAt)}</div>
+              </div>
+              <Ic n="chevron" className="w-4 h-4 text-slate-300"/>
+            </button>
+          ))}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function LeadsList({open}){
+  const { db } = useStore();
+  const [filter,setFilter] = useState('todos');
+  const leads = db.leads.filter(l=> filter==='todos' ? true : l.status===filter);
+  return (
+    <div>
+      <h1 className="text-2xl font-extrabold">Leads & Oportunidades</h1>
+      <div className="flex gap-2 mt-4 flex-wrap">
+        {['todos','novo','qualificado','orcamento_enviado','aprovado','recusado'].map(f=>(
+          <button key={f} onClick={()=>setFilter(f)} className={"px-3 py-1.5 rounded-lg text-sm font-medium "+(filter===f?'brand-gradient text-white':'bg-white text-slate-600 border border-slate-200')}>
+            {f==='todos'?'Todos':LEAD_STATUS[f].label}
+          </button>
+        ))}
+      </div>
+      <Card className="mt-4 overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-500"><tr>
+            <th className="text-left font-medium px-5 py-3">Cliente</th><th className="text-left font-medium px-5 py-3">Serviço</th>
+            <th className="text-left font-medium px-5 py-3">Protocolo</th><th className="text-left font-medium px-5 py-3">Data</th>
+            <th className="text-left font-medium px-5 py-3">Status</th><th></th>
+          </tr></thead>
+          <tbody>
+            {leads.map(l=>(
+              <tr key={l.id} onClick={()=>open('leads',{leadId:l.id})} className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer">
+                <td className="px-5 py-3 font-semibold">{l.snapshotName}<span className="text-xs text-slate-400 font-normal ml-1">({l.snapshotType})</span></td>
+                <td className="px-5 py-3">{SERVICE_LABEL[l.serviceType]}</td>
+                <td className="px-5 py-3 text-slate-500">{l.protocol}</td>
+                <td className="px-5 py-3 text-slate-500">{fmtDate(l.createdAt)}</td>
+                <td className="px-5 py-3"><Badge tone={LEAD_STATUS[l.status]?.tone}>{LEAD_STATUS[l.status]?.label}</Badge></td>
+                <td className="px-5 py-3 text-right"><Ic n="chevron" className="w-4 h-4 text-slate-300 inline"/></td>
+              </tr>
+            ))}
+            {leads.length===0 && <tr><td colSpan="6" className="text-center text-slate-400 py-8">Nenhum lead neste filtro.</td></tr>}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+function LeadDetail({leadId,open}){
+  const { db, mutate, toast } = useStore();
+  const lead = db.leads.find(l=>l.id===leadId);
+  if(!lead) return <div>Lead não encontrado.</div>;
+  const env = lead.environment||{};
+
+  const qualify = () => {
+    mutate(d=>{
+      const l = d.leads.find(x=>x.id===leadId);
+      if(!l.customerId){
+        const c = { id:uid('cus'), tenantId:'eco', type:l.snapshotType, name:l.snapshotName, document:'', email:l.snapshotEmail, phone:l.snapshotPhone, bairro:'', createdAt:nowISO() };
+        d.customers.push(c); l.customerId=c.id;
+      }
+      l.status='qualificado';
+      return d;
+    });
+    toast('Lead qualificado e cliente criado na carteira.');
+  };
+
+  return (
+    <div>
+      <Btn variant="ghost" onClick={()=>open('leads')}><span className="inline-flex items-center gap-1.5"><Ic n="back"/>Leads</span></Btn>
+      <div className="flex items-start justify-between mt-3">
+        <div>
+          <h1 className="text-2xl font-extrabold">{lead.snapshotName}</h1>
+          <div className="text-sm text-slate-500 flex items-center gap-3 mt-1">
+            <span><Badge tone={lead.snapshotType==='PJ'?'violet':'slate'}>{lead.snapshotType}</Badge></span>
+            <span className="flex items-center gap-1"><Ic n="mail" className="w-3.5 h-3.5"/>{lead.snapshotEmail||'—'}</span>
+            <span className="flex items-center gap-1"><Ic n="phone" className="w-3.5 h-3.5"/>{lead.snapshotPhone||'—'}</span>
+          </div>
+        </div>
+        <Badge tone={LEAD_STATUS[lead.status]?.tone}>{LEAD_STATUS[lead.status]?.label}</Badge>
+      </div>
+
+      <div className="grid lg:grid-cols-3 gap-5 mt-6">
+        <Card className="p-5 lg:col-span-2">
+          <div className="font-bold mb-3">Detalhes do ambiente</div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-sm">
+            <Info label="Serviço" value={SERVICE_LABEL[lead.serviceType]}/>
+            {lead.serviceType==='instalacao' && <>
+              <Info label="Área" value={(env.areaM2||'—')+' m²'}/>
+              <Info label="Pessoas" value={env.people||'—'}/>
+              <Info label="Eletrônicos" value={env.electronics||'—'}/>
+              <Info label="Sol" value={env.sunExposure==='tarde'?'Tarde (quente)':'Manhã/sombra'}/>
+              <Info label="Pé-direito" value={(env.ceilingHeight||'—')+' m'}/>
+            </>}
+          </div>
+          {env.notes && <div className="mt-4 text-sm"><div className="text-xs text-slate-400 mb-1">Observações</div><div className="p-3 rounded-xl bg-slate-50">{env.notes}</div></div>}
+          {lead.media?.length>0 && (
+            <div className="mt-4">
+              <div className="text-xs text-slate-400 mb-2">Mídia enviada</div>
+              <div className="flex gap-2 flex-wrap">{lead.media.map((m,i)=><img key={i} src={m.url} className="w-28 h-20 object-cover rounded-xl border border-slate-200"/>)}</div>
+            </div>
+          )}
+        </Card>
+
+        <div className="space-y-5">
+          {lead.serviceType==='instalacao' && (
+            <Card className="p-5">
+              <div className="text-sm text-slate-500 flex items-center gap-2"><Ic n="snow" className="w-4 h-4 text-aqua-500"/>Estimativa de BTU</div>
+              <div className="text-2xl font-extrabold text-aqua-900 mt-1">{lead.estimatedBtu? lead.estimatedBtu.toLocaleString('pt-BR')+' BTU/h':'—'}</div>
+              <div className="text-xs text-slate-400 mt-1">Referência automática. Ajuste conforme avaliação técnica.</div>
+            </Card>
+          )}
+          <Card className="p-5">
+            <div className="font-bold mb-3">Ações</div>
+            <div className="space-y-2">
+              {lead.status==='novo' && <Btn className="w-full" onClick={qualify}>Qualificar lead</Btn>}
+              {['qualificado','novo'].includes(lead.status) && <Btn variant="outline" className="w-full" onClick={()=>{ if(lead.status==='novo') qualify(); open('quote',{leadId}); }}>Montar orçamento</Btn>}
+              {lead.status==='orcamento_enviado' && <>
+                <Btn className="w-full" onClick={()=>{ mutate(d=>{d.leads.find(x=>x.id===leadId).status='aprovado'; const q=d.quotes.find(q=>q.leadId===leadId); if(q) q.status='aprovado'; return d;}); toast('Orçamento aprovado.'); }}>Marcar como aprovado</Btn>
+                <Btn variant="outline" className="w-full" onClick={()=>open('quote',{leadId})}>Ver/editar orçamento</Btn>
+                <Btn variant="danger" className="w-full" onClick={()=>{ mutate(d=>{d.leads.find(x=>x.id===leadId).status='recusado'; return d;}); toast('Lead marcado como recusado.'); }}>Recusado</Btn>
+              </>}
+              {lead.status==='aprovado' && <div className="text-sm text-green-600 flex items-center gap-2"><Ic n="check"/>Orçamento aprovado.</div>}
+              {lead.customerId && <Btn variant="ghost" className="w-full" onClick={()=>open('customers',{customerId:lead.customerId})}>Abrir prontuário do cliente</Btn>}
+            </div>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}
+const Info = ({label,value}) => <div><div className="text-xs text-slate-400">{label}</div><div className="font-semibold">{value}</div></div>;
+
+const CAT_LABEL = { equipamento:'Equipamento', mao_de_obra:'Mão de obra', local:'Local / Infra', deslocamento:'Deslocamento', outro:'Outro' };
+function QuoteBuilder({leadId,open}){
+  const { db, mutate, toast } = useStore();
+  const lead = db.leads.find(l=>l.id===leadId);
+  const existing = db.quotes.find(q=>q.leadId===leadId);
+  const [items,setItems] = useState(existing? existing.items : [
+    { id:uid('li'), category:'equipamento', description:'', amount:'' },
+    { id:uid('li'), category:'mao_de_obra', description:'', amount:'' },
+  ]);
+  const total = items.reduce((s,i)=>s+(+i.amount||0),0);
+  const addItem = () => setItems([...items,{id:uid('li'),category:'local',description:'',amount:''}]);
+  const upd = (id,k,v) => setItems(items.map(i=>i.id===id?{...i,[k]:v}:i));
+  const del = id => setItems(items.filter(i=>i.id!==id));
+
+  const send = () => {
+    const clean = items.filter(i=>i.description && +i.amount>0).map(i=>({...i,amount:+i.amount}));
+    if(clean.length===0){ toast('Adicione ao menos um item válido.','warn'); return; }
+    mutate(d=>{
+      const l = d.leads.find(x=>x.id===leadId); l.status='orcamento_enviado';
+      let q = d.quotes.find(q=>q.leadId===leadId);
+      const payload = { items:clean, total:clean.reduce((s,i)=>s+i.amount,0), status:'enviado' };
+      if(q){ Object.assign(q,payload); } else { d.quotes.push({ id:uid('quote'), tenantId:'eco', leadId, customerId:l.customerId||null, validUntil:addDays(nowISO(),10), createdAt:nowISO(), ...payload }); }
+      return d;
+    });
+    toast('Orçamento enviado ao cliente (simulado).');
+    open('leads',{leadId});
+  };
+
+  return (
+    <div className="max-w-3xl">
+      <Btn variant="ghost" onClick={()=>open('leads',{leadId})}><span className="inline-flex items-center gap-1.5"><Ic n="back"/>Voltar ao lead</span></Btn>
+      <h1 className="text-2xl font-extrabold mt-3">Orçamento — {lead?.snapshotName}</h1>
+      <p className="text-slate-500 text-sm">Detalhe o serviço em itens. O cliente vê o breakdown — transparência gera confiança.</p>
+
+      <Card className="p-5 mt-5">
+        <div className="space-y-3">
+          {items.map(i=>(
+            <div key={i.id} className="grid grid-cols-12 gap-2 items-center">
+              <div className="col-span-3"><Select value={i.category} onChange={e=>upd(i.id,'category',e.target.value)}>{Object.entries(CAT_LABEL).map(([v,l])=><option key={v} value={v}>{l}</option>)}</Select></div>
+              <div className="col-span-6"><Input value={i.description} onChange={e=>upd(i.id,'description',e.target.value)} placeholder="Descrição do item"/></div>
+              <div className="col-span-2"><Input type="number" value={i.amount} onChange={e=>upd(i.id,'amount',e.target.value)} placeholder="R$"/></div>
+              <div className="col-span-1 text-right"><button onClick={()=>del(i.id)} className="text-slate-300 hover:text-red-500 text-lg">×</button></div>
+            </div>
+          ))}
+        </div>
+        <Btn variant="soft" className="mt-3" onClick={addItem}><span className="inline-flex items-center gap-1.5"><Ic n="plus"/>Adicionar item</span></Btn>
+
+        <div className="mt-5 pt-5 border-t border-slate-100 flex items-center justify-between">
+          <div className="text-sm text-slate-500">Total do orçamento</div>
+          <div className="text-2xl font-extrabold brand-text">{fmtBRL(total)}</div>
+        </div>
+      </Card>
+      <div className="flex justify-end gap-2 mt-4">
+        <Btn variant="outline" onClick={()=>open('leads',{leadId})}>Cancelar</Btn>
+        <Btn onClick={send}><span className="inline-flex items-center gap-2"><Ic n="mail"/>Enviar ao cliente</span></Btn>
+      </div>
+    </div>
+  );
+}
+
+function CustomersList({open}){
+  const { db } = useStore();
+  const [q,setQ] = useState('');
+  const list = db.customers.filter(c=> (c.name+' '+(c.email||'')+' '+(c.phone||'')).toLowerCase().includes(q.toLowerCase()));
+  const eqCount = cid => db.equipment.filter(e=>e.customerId===cid).length;
+  return (
+    <div>
+      <h1 className="text-2xl font-extrabold">Clientes</h1>
+      <p className="text-slate-500 text-sm">Sua carteira. Clique para abrir o prontuário completo.</p>
+      <div className="relative mt-4 max-w-sm">
+        <Ic n="search" className="w-4 h-4 absolute left-3 top-3 text-slate-400"/>
+        <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Buscar por nome, e-mail, telefone" className={inputCls+" pl-9"}/>
+      </div>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-5">
+        {list.map(c=>(
+          <button key={c.id} onClick={()=>open('customers',{customerId:c.id})} className="text-left">
+            <Card className="p-5 hover:shadow-lg transition">
+              <div className="flex items-center justify-between">
+                <div className="w-10 h-10 rounded-xl brand-gradient text-white flex items-center justify-center font-bold">{c.name[0]}</div>
+                <Badge tone={c.type==='PJ'?'violet':'slate'}>{c.type}</Badge>
+              </div>
+              <div className="font-bold mt-3">{c.name}</div>
+              <div className="text-xs text-slate-400 flex items-center gap-1 mt-0.5"><Ic n="pin" className="w-3 h-3"/>{c.bairro||'—'}</div>
+              <div className="text-xs text-slate-500 mt-2">{eqCount(c.id)} equipamento(s)</div>
+            </Card>
+          </button>
+        ))}
+        {list.length===0 && <div className="text-slate-400 text-sm">Nenhum cliente encontrado.</div>}
+      </div>
+    </div>
+  );
+}
+
+function CustomerChart({customerId,open}){
+  const { db, mutate, toast } = useStore();
+  const c = db.customers.find(x=>x.id===customerId);
+  const [osModal,setOsModal] = useState(null);
+  if(!c) return <div>Cliente não encontrado.</div>;
+  const equipment = db.equipment.filter(e=>e.customerId===customerId);
+  const orders = db.serviceOrders.filter(o=>o.customerId===customerId).sort((a,b)=>new Date(b.scheduledFor||b.completedAt)-new Date(a.scheduledFor||a.completedAt));
+  const quotes = db.quotes.filter(q=>q.customerId===customerId);
+
+  return (
+    <div>
+      <Btn variant="ghost" onClick={()=>open('customers')}><span className="inline-flex items-center gap-1.5"><Ic n="back"/>Clientes</span></Btn>
+      <div className="flex items-center gap-4 mt-3">
+        <div className="w-14 h-14 rounded-2xl brand-gradient text-white flex items-center justify-center text-2xl font-extrabold">{c.name[0]}</div>
+        <div>
+          <h1 className="text-2xl font-extrabold">{c.name}</h1>
+          <div className="text-sm text-slate-500 flex items-center gap-3">
+            <Badge tone={c.type==='PJ'?'violet':'slate'}>{c.type}</Badge>
+            <span className="flex items-center gap-1"><Ic n="mail" className="w-3.5 h-3.5"/>{c.email||'—'}</span>
+            <span className="flex items-center gap-1"><Ic n="phone" className="w-3.5 h-3.5"/>{c.phone||'—'}</span>
+            <span className="flex items-center gap-1"><Ic n="pin" className="w-3.5 h-3.5"/>{c.bairro||'—'}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* equipamentos (prontuário) */}
+      <h2 className="font-bold mt-7 mb-3 flex items-center gap-2"><Ic n="snow" className="w-4 h-4 text-aqua-500"/>Equipamentos</h2>
+      <div className="grid sm:grid-cols-2 gap-4">
+        {equipment.length===0 && <div className="text-sm text-slate-400">Nenhum equipamento registrado ainda.</div>}
+        {equipment.map(eq=>{
+          const nm = nextMaint(eq); const du = nm? daysUntil(nm): null;
+          return (
+            <Card key={eq.id} className="p-5">
+              <div className="flex items-center justify-between">
+                <div className="font-bold">{eq.brand} {eq.model}</div>
+                <Badge tone="blue">{eq.btu.toLocaleString('pt-BR')} BTU</Badge>
+              </div>
+              <div className="grid grid-cols-2 gap-3 mt-3 text-sm">
+                <Info label="Tipo" value={eq.type}/>
+                <Info label="Instalado em" value={fmtDate(eq.installedAt)}/>
+                <Info label="Última manutenção" value={fmtDate(eq.lastMaintenanceAt)}/>
+                <Info label="Garantia até" value={fmtDate(eq.warrantyUntil)}/>
+              </div>
+              <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between">
+                <span className="text-xs text-slate-400">Próxima manutenção: {fmtDate(nm)}</span>
+                {du!==null && <Badge tone={du<0?'red':du<=30?'amber':'green'}>{du<0?`${Math.abs(du)}d atrasada`:`em ${du}d`}</Badge>}
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+
+      {/* histórico de serviços */}
+      <h2 className="font-bold mt-8 mb-3 flex items-center gap-2"><Ic n="file" className="w-4 h-4 text-violet-500"/>Histórico de serviços</h2>
+      <Card className="p-2">
+        {orders.length===0 && <div className="text-sm text-slate-400 p-4 text-center">Sem serviços registrados.</div>}
+        {orders.map(o=>(
+          <div key={o.id} className="flex items-center justify-between p-3 border-b border-slate-50 last:border-0">
+            <div>
+              <div className="font-semibold text-sm">{SERVICE_LABEL[o.serviceType]} <span className="text-xs text-slate-400 font-normal">· {o.notes}</span></div>
+              <div className="text-xs text-slate-400">{o.status==='concluido'? 'Concluído em '+fmtDate(o.completedAt) : 'Agendado para '+fmtDate(o.scheduledFor)}</div>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="font-semibold text-sm">{fmtBRL(o.amount)}</span>
+              {o.status==='concluido' ? <Badge tone="green">Concluído</Badge>
+                : <Btn variant="soft" onClick={()=>setOsModal(o)}>Concluir & lembrete</Btn>}
+            </div>
+          </div>
+        ))}
+      </Card>
+
+      {quotes.length>0 && (
+        <>
+          <h2 className="font-bold mt-8 mb-3 flex items-center gap-2"><Ic n="money" className="w-4 h-4 text-green-500"/>Orçamentos</h2>
+          <Card className="p-2">
+            {quotes.map(q=>(
+              <div key={q.id} className="flex items-center justify-between p-3 border-b border-slate-50 last:border-0">
+                <div className="text-sm text-slate-500">{q.items.length} itens · {fmtDate(q.createdAt)}</div>
+                <div className="flex items-center gap-3"><span className="font-semibold">{fmtBRL(q.total)}</span><Badge tone={q.status==='aprovado'?'green':q.status==='enviado'?'amber':'slate'}>{q.status}</Badge></div>
+              </div>
+            ))}
+          </Card>
+        </>
+      )}
+
+      {osModal && <ConcludeModal order={osModal} customer={c} onClose={()=>setOsModal(null)}/>}
+    </div>
+  );
+}
+
+function ConcludeModal({order,customer,onClose}){
+  const { db, mutate, toast } = useStore();
+  const eqExisting = db.equipment.find(e=>e.id===order.equipmentId);
+  const [eq,setEq] = useState(eqExisting || { brand:'', model:'', btu:'', type:'split', maintenanceIntervalDays:120 });
+  const [rem,setRem] = useState({ enabled:true, leadDays:7, channel:'email' });
+
+  const finish = () => {
+    mutate(d=>{
+      const o = d.serviceOrders.find(x=>x.id===order.id);
+      o.status='concluido'; o.completedAt=nowISO();
+      o.reminderEnabled=rem.enabled; o.reminderLeadDays=+rem.leadDays; o.reminderChannel=rem.channel;
+      // cria/atualiza equipamento
+      let equip = d.equipment.find(e=>e.id===o.equipmentId);
+      if(!equip){
+        equip = { id:uid('eq'), tenantId:'eco', customerId:customer.id, siteId:null, brand:eq.brand, model:eq.model, btu:+eq.btu||0, type:eq.type,
+          installedAt:nowISO(), warrantyUntil:addDays(nowISO(),365), lastMaintenanceAt:nowISO(), maintenanceIntervalDays:+eq.maintenanceIntervalDays||120, status:'ativo' };
+        d.equipment.push(equip); o.equipmentId=equip.id;
+      } else {
+        equip.lastMaintenanceAt=nowISO(); equip.maintenanceIntervalDays=+eq.maintenanceIntervalDays||equip.maintenanceIntervalDays;
+      }
+      if(rem.enabled){
+        d.reminders.push({ id:uid('rem'), tenantId:'eco', customerId:customer.id, equipmentId:equip.id, serviceOrderId:o.id,
+          dueAt: nextMaint(equip), leadDays:+rem.leadDays, channel:rem.channel, status:'agendado' });
+      }
+      return d;
+    });
+    toast(rem.enabled? `OS concluída. Lembrete agendado (${rem.channel}, ${rem.leadDays}d antes).` : 'OS concluída.');
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/40 z-40 flex items-center justify-center p-4" onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()} className="bg-white rounded-2xl shadow-card max-w-lg w-full p-6 max-h-[90vh] overflow-auto">
+        <h3 className="text-lg font-bold">Concluir serviço & configurar lembrete</h3>
+        <p className="text-sm text-slate-500 mb-4">Ao concluir, o equipamento entra no prontuário e o lembrete de manutenção é agendado.</p>
+
+        <div className="text-xs font-semibold text-slate-400 uppercase mb-2">Equipamento</div>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Marca"><Input value={eq.brand} onChange={e=>setEq({...eq,brand:e.target.value})} placeholder="ex: Fujitsu"/></Field>
+          <Field label="Modelo"><Input value={eq.model} onChange={e=>setEq({...eq,model:e.target.value})} placeholder="ex: Inverter 12k"/></Field>
+          <Field label="BTU"><Input type="number" value={eq.btu} onChange={e=>setEq({...eq,btu:e.target.value})} placeholder="12000"/></Field>
+          <Field label="Tipo"><Select value={eq.type} onChange={e=>setEq({...eq,type:e.target.value})}><option>split</option><option>janela</option><option>cassete</option><option>multi</option><option>outro</option></Select></Field>
+        </div>
+
+        <div className="text-xs font-semibold text-slate-400 uppercase mt-5 mb-2">Lembrete de manutenção</div>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={rem.enabled} onChange={e=>setRem({...rem,enabled:e.target.checked})}/> Agendar lembrete automático</label>
+        {rem.enabled && (
+          <div className="grid grid-cols-3 gap-3 mt-3">
+            <Field label="Intervalo (dias)"><Input type="number" value={eq.maintenanceIntervalDays} onChange={e=>setEq({...eq,maintenanceIntervalDays:e.target.value})}/></Field>
+            <Field label="Avisar antes (dias)"><Input type="number" value={rem.leadDays} onChange={e=>setRem({...rem,leadDays:e.target.value})}/></Field>
+            <Field label="Canal"><Select value={rem.channel} onChange={e=>setRem({...rem,channel:e.target.value})}><option value="email">E-mail</option><option value="whatsapp">WhatsApp</option><option value="ambos">Ambos</option></Select></Field>
+          </div>
+        )}
+        {rem.enabled && <p className="text-xs text-slate-400 mt-2">Litoral: intervalo menor (90–120d) por causa da maresia.</p>}
+
+        <div className="flex justify-end gap-2 mt-6">
+          <Btn variant="outline" onClick={onClose}>Cancelar</Btn>
+          <Btn onClick={finish}><span className="inline-flex items-center gap-2"><Ic n="check"/>Concluir</span></Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AskAI(){
+  return (
+    <div className="max-w-2xl">
+      <h1 className="text-2xl font-extrabold flex items-center gap-2">Ask to AI <Badge tone="amber">Em breve</Badge></h1>
+      <p className="text-slate-500 text-sm mt-1">Um assistente para te ajudar a lidar com clientes: como responder um lead, justificar um orçamento, sugerir o próximo contato de retenção.</p>
+      <Card className="p-6 mt-5 opacity-80">
+        <div className="space-y-3">
+          {['Como respondo o lead do Restaurante Maré Alta?','Escreva um lembrete amigável de manutenção para a Padaria Pão Quente','Qual argumento de valor para a manutenção preventiva no litoral?'].map(s=>(
+            <div key={s} className="p-3 rounded-xl bg-slate-50 text-sm text-slate-500 flex items-center justify-between">
+              {s} <Ic n="spark" className="w-4 h-4 text-slate-300"/>
+            </div>
+          ))}
+        </div>
+        <div className="mt-5 flex gap-2">
+          <input disabled placeholder="Pergunte algo ao assistente..." className={inputCls+" bg-slate-50"}/>
+          <Btn disabled>Enviar</Btn>
+        </div>
+        <p className="text-xs text-slate-400 mt-3 text-center">Espaço reservado — será ligado a um modelo de IA na próxima fase.</p>
+      </Card>
+    </div>
+  );
+}
+
+/* ============================================================
+   APP
+   ============================================================ */
+function App(){
+  const [side,setSide] = useState('client'); // client | login | provider
+  return (
+    <StoreProvider>
+      {side==='client' && <ClientSite goProvider={()=>setSide('login')}/>}
+      {side==='login' && <Login onLogin={()=>setSide('provider')} onBack={()=>setSide('client')}/>}
+      {side==='provider' && <ProviderApp goClient={()=>setSide('client')}/>}
+    </StoreProvider>
+  );
+}
+
+function Login({onLogin,onBack}){
+  return (
+    <div className="min-h-screen flex items-center justify-center p-4 brand-gradient">
+      <Card className="p-8 max-w-sm w-full">
+        <div className="flex justify-center"><Logo/></div>
+        <h1 className="text-xl font-bold text-center mt-5">Área do prestador</h1>
+        <p className="text-sm text-slate-500 text-center mt-1">Acesso de demonstração</p>
+        <div className="mt-5 space-y-3">
+          <Field label="E-mail"><Input defaultValue="contato@ecotherm.com.br"/></Field>
+          <Field label="Senha"><Input type="password" defaultValue="demo1234"/></Field>
+          <Btn className="w-full" onClick={onLogin}>Entrar</Btn>
+          <Btn variant="ghost" className="w-full" onClick={onBack}>Voltar ao site</Btn>
+        </div>
+        <p className="text-xs text-slate-400 text-center mt-4">Login simulado — qualquer valor entra.</p>
+      </Card>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>

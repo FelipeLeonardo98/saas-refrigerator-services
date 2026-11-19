@@ -1,0 +1,221 @@
+// EcoTherm CRM — modelo de dados (alvo Fase 2).
+// Na Fase 1 este schema é a SPEC: a UI roda em localStorage com estas mesmas formas.
+// Trocar provider de sqlite p/ postgresql (Supabase) é 1 linha + migrate.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite" // Fase 2: trocar para "postgresql" (Supabase) sem mudar os modelos
+  url      = env("DATABASE_URL")
+}
+
+/// Prestador = tenant. Fase 1: um só (EcoTherm). Tudo carrega tenantId.
+model Tenant {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  tagline     String?
+  logoUrl     String?
+  brandColors String?  // JSON { primary, accent, ... }
+  city        String?
+  region      String?
+  createdAt   DateTime @default(now())
+
+  customers    Customer[]
+  sites        Site[]
+  equipment    Equipment[]
+  leads        Lead[]
+  quotes       Quote[]
+  serviceOrders ServiceOrder[]
+  reminders    Reminder[]
+  media        Media[]
+}
+
+enum CustomerType {
+  PF
+  PJ
+}
+
+model Customer {
+  id        String       @id @default(cuid())
+  tenantId  String
+  type      CustomerType
+  name      String
+  document  String?      // CPF | CNPJ
+  email     String?
+  phone     String?
+  createdAt DateTime     @default(now())
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id])
+  sites         Site[]
+  equipment     Equipment[]
+  leads         Lead[]
+  quotes        Quote[]
+  serviceOrders ServiceOrder[]
+  reminders     Reminder[]
+
+  @@index([tenantId])
+}
+
+/// Local/unidade. PF ~1; PJ pode ter vários (distingue por name/address).
+model Site {
+  id         String  @id @default(cuid())
+  tenantId   String
+  customerId String
+  name       String
+  address    String?
+  notes      String?
+
+  tenant    Tenant      @relation(fields: [tenantId], references: [id])
+  customer  Customer    @relation(fields: [customerId], references: [id])
+  equipment Equipment[]
+
+  @@index([tenantId])
+  @@index([customerId])
+}
+
+/// Equipamento rastreado = o "prontuário". Serviços penduram aqui.
+model Equipment {
+  id                      String    @id @default(cuid())
+  tenantId                String
+  customerId              String
+  siteId                  String?
+  brand                   String?
+  model                   String?
+  btu                     Int?
+  type                    String?   // split | janela | cassete | multi | outro
+  installedAt             DateTime?
+  warrantyUntil           DateTime?
+  lastMaintenanceAt       DateTime?
+  maintenanceIntervalDays Int       @default(180) // litoral/maresia: 90-120
+  status                  String    @default("ativo")
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id])
+  customer      Customer       @relation(fields: [customerId], references: [id])
+  site          Site?          @relation(fields: [siteId], references: [id])
+  serviceOrders ServiceOrder[]
+  reminders     Reminder[]
+
+  @@index([tenantId])
+  @@index([customerId])
+}
+
+/// Lead = pré-orçamento enviado pela tela pública.
+model Lead {
+  id              String   @id @default(cuid())
+  tenantId        String
+  protocol        String   @unique
+  customerId      String?  // preenchido ao qualificar
+  snapshotName    String
+  snapshotEmail   String?
+  snapshotPhone   String?
+  snapshotType    CustomerType @default(PF)
+  serviceType     String   // instalacao | manutencao | outros
+  environment     String?  // JSON { areaM2, people, electronics, sunExposure, ceilingHeight, notes }
+  estimatedBtu    Int?
+  status          String   @default("novo") // ver 03-state-machine
+  createdAt       DateTime @default(now())
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id])
+  customer Customer? @relation(fields: [customerId], references: [id])
+  quote    Quote?
+  media    Media[]
+
+  @@index([tenantId])
+  @@index([status])
+}
+
+model Quote {
+  id         String   @id @default(cuid())
+  tenantId   String
+  leadId     String?  @unique
+  customerId String?
+  status     String   @default("rascunho") // rascunho | enviado | aprovado | recusado
+  total      Int      @default(0)           // centavos
+  validUntil DateTime?
+  createdAt  DateTime @default(now())
+
+  tenant       Tenant          @relation(fields: [tenantId], references: [id])
+  lead         Lead?           @relation(fields: [leadId], references: [id])
+  customer     Customer?       @relation(fields: [customerId], references: [id])
+  items        QuoteLineItem[]
+  serviceOrder ServiceOrder?
+
+  @@index([tenantId])
+}
+
+model QuoteLineItem {
+  id          String @id @default(cuid())
+  quoteId     String
+  category    String // equipamento | mao_de_obra | local | deslocamento | outro
+  description String
+  amount      Int    // centavos
+
+  quote Quote @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+
+  @@index([quoteId])
+}
+
+model ServiceOrder {
+  id           String    @id @default(cuid())
+  tenantId     String
+  customerId   String
+  quoteId      String?   @unique
+  equipmentId  String?
+  serviceType  String
+  status       String    @default("agendado") // agendado | em_execucao | concluido
+  scheduledFor DateTime?
+  completedAt  DateTime?
+  amount       Int       @default(0) // centavos
+  notes        String?
+  // config de lembrete definida na conclusão:
+  reminderEnabled  Boolean @default(false)
+  reminderLeadDays Int     @default(7)
+  reminderChannel  String  @default("email") // email | whatsapp | ambos
+
+  tenant    Tenant     @relation(fields: [tenantId], references: [id])
+  customer  Customer   @relation(fields: [customerId], references: [id])
+  quote     Quote?     @relation(fields: [quoteId], references: [id])
+  equipment Equipment? @relation(fields: [equipmentId], references: [id])
+  reminders Reminder[]
+
+  @@index([tenantId])
+  @@index([customerId])
+}
+
+model Reminder {
+  id             String   @id @default(cuid())
+  tenantId       String
+  customerId     String
+  equipmentId    String?
+  serviceOrderId String?
+  dueAt          DateTime
+  leadDays       Int      @default(7)
+  channel        String   @default("email")
+  status         String   @default("agendado") // agendado | enviado | cancelado
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id])
+  customer     Customer      @relation(fields: [customerId], references: [id])
+  equipment    Equipment?    @relation(fields: [equipmentId], references: [id])
+  serviceOrder ServiceOrder? @relation(fields: [serviceOrderId], references: [id])
+
+  @@index([tenantId])
+  @@index([dueAt])
+}
+
+model Media {
+  id        String @id @default(cuid())
+  tenantId  String
+  ownerType String // lead | serviceOrder
+  ownerId   String
+  kind      String // foto | video
+  url       String // Fase 1: data URL; Fase 2: URL do Supabase Storage
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  lead   Lead?  @relation(fields: [ownerId], references: [id], map: "media_lead_fk")
+
+  @@index([tenantId])
+  @@index([ownerType, ownerId])
+}
