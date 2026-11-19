@@ -14,6 +14,11 @@ Abra `web/index.html` no navegador. Não precisa de build nem servidor.
 - **Lado prestador:** painel de gestão (login mock).
 - **Resetar dados:** botão no rodapé do painel.
 
+## Link público (qualquer um acessa)
+
+- **GitHub Pages (recomendado, seu domínio):** já há um workflow em `.github/workflows/deploy-pages.yml`. Após o push, vá em **Settings → Pages → Source: "GitHub Actions"**. Publica a pasta `web/` em `https://felipeleonardo98.github.io/saas-refrigerator-services/`.
+- **Instantâneo, sem repo:** arraste `web/index.html` em https://app.netlify.com/drop → link público na hora.
+
 ## Documentação (Spec-Driven Development)
 
 A fonte da verdade está em [`docs/specs/`](docs/specs/). Comece por [`AGENTS.md`](AGENTS.md).
