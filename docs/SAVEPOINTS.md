@@ -36,3 +36,23 @@ PoC funcional client-side. Publicado como artifact.
 **Decisões em aberto**
 - Canal de notificação definitivo (e-mail só? WhatsApp via Meta/Z-API?).
 - Modelo de cobrança do SaaS (quando sair do PoC).
+
+---
+
+## Savepoint 002 — 2026-11-18 — Deploy público + fix tela branca
+
+**Feito**
+- Push liberado (Claude GitHub App instalado). `main` no GitHub.
+- GitHub Pages ligado (Source: GitHub Actions). PoC público em
+  https://felipeleonardo98.github.io/saas-refrigerator-services/
+- Fix tela branca: `@babel/standalone` usava "automatic runtime" (injeta
+  `import` de react/jsx-runtime → quebra em script inline). Agora o JSX é
+  transformado manualmente com `{ runtime: 'classic' }`.
+- Verificado no navegador: render OK, console sem erros, dashboard com dados.
+
+**Estado atual**
+PoC Fase 1 no ar e funcional no link público.
+
+**Próximos passos**
+- Feedback do prestador.
+- Fase 2: Next.js + Prisma + Supabase (fluxo cross-device real, e-mail).
