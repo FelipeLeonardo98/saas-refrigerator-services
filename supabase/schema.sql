@@ -172,3 +172,13 @@ begin
     execute format('create policy poc_all on %I for all using (true) with check (true);', t);
   end loop;
 end $$;
+
+-- ============ GRANTS ============
+-- RLS controla as LINHAS; os GRANTs abaixo dão o privilégio de TABELA ao papel
+-- anon (usado pela publishable key no navegador). Sem eles o PostgREST retorna
+-- 42501 "permission denied for table".
+grant usage on schema public to anon, authenticated;
+grant select, insert, update, delete on all tables in schema public to anon, authenticated;
+grant usage, select on all sequences in schema public to anon, authenticated;
+alter default privileges in schema public grant select, insert, update, delete on tables to anon, authenticated;
+alter default privileges in schema public grant usage, select on sequences to anon, authenticated;
