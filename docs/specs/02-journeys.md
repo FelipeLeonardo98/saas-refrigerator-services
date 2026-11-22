@@ -26,7 +26,7 @@
 1. A partir do lead, cria um **Quote**.
 2. Adiciona itens por categoria (equipamento, mão de obra, local, deslocamento).
 3. O total soma automaticamente. Ex: Instalação R$ 1.700 = R$ 800 equipamentos + R$ 500 mão de obra + R$ 400 local.
-4. Envia (status → enviado). Cliente vê refletido no acompanhamento.
+4. Envia (status → enviado). O envio abre um link direto já preenchido — **WhatsApp** (`wa.me`) ou **e-mail** (`mailto`) — para o contato do cliente; o prestador confirma o disparo. O cliente também vê refletido no acompanhamento. (Disparo 100% automático = Fase 2, com backend.)
 
 ### J5 — Executar e concluir (OS)
 1. Orçamento aprovado → vira **ServiceOrder** agendada.

@@ -149,7 +149,7 @@ model Quote {
 model QuoteLineItem {
   id          String @id @default(cuid())
   quoteId     String
-  category    String // equipamento | mao_de_obra | local | deslocamento | outro
+  category    String // equipamento | material | mao_de_obra | local | deslocamento | outro
   description String
   amount      Int    // centavos
 

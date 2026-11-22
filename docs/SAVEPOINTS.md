@@ -56,3 +56,27 @@ PoC Fase 1 no ar e funcional no link público.
 **Próximos passos**
 - Feedback do prestador.
 - Fase 2: Next.js + Prisma + Supabase (fluxo cross-device real, e-mail).
+
+---
+
+## Savepoint 003 — 2026-11-22 — Feedbacks do piloto + início do banco
+
+**Feito (feedbacks)**
+- Mobile: sidebar do prestador virou drawer com botão hambúrguer + overlay;
+  cabeçalho do cliente e linhas do orçamento responsivos.
+- Envio do orçamento real (sem backend): gera a mensagem com o breakdown e
+  abre WhatsApp (wa.me) ou e-mail (mailto) já preenchido p/ o contato do cliente.
+- Categoria "Material / Insumos" adicionada ao orçamento.
+
+**Feito (banco — início)**
+- `supabase/schema.sql`: DDL Postgres espelhando o modelo + tenant EcoTherm + RLS de piloto (permissiva).
+- `supabase/README.md`: abordagem (front estático + supabase-js, mantém Pages, sem custo) e passo a passo.
+
+**Pendente de você**
+- Criar projeto no Supabase, rodar o `schema.sql`, e me passar Project URL + anon key
+  (públicas). NÃO compartilhar service_role key nem senha do banco.
+
+**Próximos passos (meus, após as credenciais)**
+- Ligar o front ao Supabase (migrar camada localStorage -> supabase-js).
+- Bucket de Storage p/ mídia.
+- Seed inicial no banco (opcional).

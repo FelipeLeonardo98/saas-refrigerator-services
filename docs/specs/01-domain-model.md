@@ -34,7 +34,7 @@ Resposta do prestador a um lead.
 `id, tenantId, leadId, customerId, status (rascunho|enviado|aprovado|recusado), items [QuoteLineItem], total, validUntil, createdAt`
 
 ### QuoteLineItem (Item do breakdown)
-`id, quoteId, category (equipamento|mao_de_obra|local|deslocamento|outro), description, amount`
+`id, quoteId, category (equipamento|material|mao_de_obra|local|deslocamento|outro), description, amount`
 - `total` = soma dos `amount`.
 
 ### ServiceOrder (Ordem de serviço / OS)

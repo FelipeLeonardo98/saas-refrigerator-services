@@ -50,6 +50,9 @@ const addDays = (d,n) => { const x=new Date(d); x.setDate(x.getDate()+n); return
 const daysUntil = d => Math.round((new Date(d) - new Date())/86400000);
 const nowISO = () => new Date().toISOString();
 const nextMaint = eq => eq.lastMaintenanceAt ? addDays(eq.lastMaintenanceAt, eq.maintenanceIntervalDays) : null;
+// Envio por link direto (sem backend): abre WhatsApp / e-mail já preenchido.
+const waLink = (phone,text)=>{ const d=(phone||'').replace(/\D/g,''); const full=d.startsWith('55')?d:'55'+d; return 'https://wa.me/'+full+'?text='+encodeURIComponent(text); };
+const mailLink = (email,subject,body)=> 'mailto:'+(email||'')+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body);
 
 // mini "foto" placeholder como data URL (evita binário externo)
 const photoSVG = (label,c1,c2) => 'data:image/svg+xml;utf8,' + encodeURIComponent(
@@ -216,6 +219,7 @@ const PATHS = {
   mail:'M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM22 6l-10 7L2 6',
   logout:'M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9',
   search:'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM21 21l-4.3-4.3', alert:'M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
+  menu:'M3 6h18M3 12h18M3 18h18', x:'M18 6 6 18M6 6l12 12',
 };
 function Ic({n,className='w-4 h-4',stroke=2}){ const d=PATHS[n]||''; return (
   <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round">
@@ -308,8 +312,8 @@ function ClientSite({ goProvider }){
         <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
           <button onClick={()=>setView('home')}><Logo/></button>
           <div className="flex items-center gap-2">
-            <Btn variant="ghost" onClick={()=>setView('track')}>Acompanhar pedido</Btn>
-            <Btn variant="outline" onClick={goProvider}><span className="inline-flex items-center gap-1.5"><Ic n="user"/>Área do prestador</span></Btn>
+            <Btn variant="ghost" className="hidden sm:inline-flex" onClick={()=>setView('track')}>Acompanhar pedido</Btn>
+            <Btn variant="outline" onClick={goProvider}><span className="inline-flex items-center gap-1.5"><Ic n="user"/><span className="hidden sm:inline">Área do prestador</span><span className="sm:hidden">Prestador</span></span></Btn>
           </div>
         </div>
       </header>
@@ -578,7 +582,8 @@ function TrackOrder({initial,onHome}){
 function ProviderApp({ goClient }){
   const [page,setPage] = useState('dashboard');
   const [ctx,setCtx] = useState(null); // { leadId } | { customerId }
-  const open = (p,c=null)=>{ setPage(p); setCtx(c); };
+  const [menuOpen,setMenuOpen] = useState(false);
+  const open = (p,c=null)=>{ setPage(p); setCtx(c); setMenuOpen(false); };
 
   const nav = [
     ['dashboard','home','Início'],
@@ -588,16 +593,28 @@ function ProviderApp({ goClient }){
   ];
 
   return (
-    <div className="min-h-screen flex">
-      {/* sidebar */}
-      <aside className="w-60 bg-white border-r border-slate-100 flex flex-col fixed h-full">
-        <div className="h-16 flex items-center px-5 border-b border-slate-100"><Logo size={34}/></div>
-        <nav className="p-3 space-y-1 flex-1">
+    <div className="min-h-screen lg:flex">
+      {/* top bar (mobile) */}
+      <div className="lg:hidden sticky top-0 z-30 bg-white border-b border-slate-100 h-14 flex items-center justify-between px-4">
+        <Logo size={30}/>
+        <button onClick={()=>setMenuOpen(true)} aria-label="Abrir menu" className="p-2 -mr-2 rounded-lg text-slate-600 hover:bg-slate-100"><Ic n="menu" className="w-6 h-6"/></button>
+      </div>
+
+      {/* backdrop (mobile) */}
+      {menuOpen && <div onClick={()=>setMenuOpen(false)} className="lg:hidden fixed inset-0 bg-black/40 z-40"/>}
+
+      {/* sidebar / drawer */}
+      <aside className={"w-60 bg-white border-r border-slate-100 flex flex-col fixed h-full z-50 transform transition-transform duration-200 lg:translate-x-0 "+(menuOpen?'translate-x-0':'-translate-x-full')}>
+        <div className="h-16 flex items-center justify-between px-5 border-b border-slate-100">
+          <Logo size={34}/>
+          <button onClick={()=>setMenuOpen(false)} aria-label="Fechar menu" className="lg:hidden p-1.5 -mr-1.5 rounded-lg text-slate-500 hover:bg-slate-100"><Ic n="x" className="w-5 h-5"/></button>
+        </div>
+        <nav className="p-3 space-y-1 flex-1 overflow-y-auto">
           {nav.map(([p,ic,label])=>(
             <button key={p} onClick={()=>open(p)}
               className={"w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-semibold transition "+(page===p?'brand-gradient text-white shadow-card':'text-slate-600 hover:bg-slate-100')}>
               <Ic n={ic}/> {label}
-              {p==='askai' && <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-white/20">em breve</span>}
+              {p==='askai' && <span className={"ml-auto text-[10px] px-1.5 py-0.5 rounded "+(page===p?'bg-white/25 text-white':'bg-amber-100 text-amber-700')}>em breve</span>}
             </button>
           ))}
         </nav>
@@ -607,8 +624,8 @@ function ProviderApp({ goClient }){
         </div>
       </aside>
 
-      <main className="flex-1 ml-60">
-        <div className="max-w-6xl mx-auto px-6 py-7">
+      <main className="flex-1 lg:ml-60 min-w-0">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-7">
           {page==='dashboard' && <Dashboard open={open}/>}
           {page==='leads' && !ctx && <LeadsList open={open}/>}
           {page==='leads' && ctx?.leadId && <LeadDetail leadId={ctx.leadId} open={open}/>}
@@ -746,8 +763,8 @@ function LeadsList({open}){
           </button>
         ))}
       </div>
-      <Card className="mt-4 overflow-hidden">
-        <table className="w-full text-sm">
+      <Card className="mt-4 overflow-x-auto">
+        <table className="w-full text-sm min-w-[600px]">
           <thead className="bg-slate-50 text-slate-500"><tr>
             <th className="text-left font-medium px-5 py-3">Cliente</th><th className="text-left font-medium px-5 py-3">Serviço</th>
             <th className="text-left font-medium px-5 py-3">Protocolo</th><th className="text-left font-medium px-5 py-3">Data</th>
@@ -857,7 +874,7 @@ function LeadDetail({leadId,open}){
 }
 const Info = ({label,value}) => <div><div className="text-xs text-slate-400">{label}</div><div className="font-semibold">{value}</div></div>;
 
-const CAT_LABEL = { equipamento:'Equipamento', mao_de_obra:'Mão de obra', local:'Local / Infra', deslocamento:'Deslocamento', outro:'Outro' };
+const CAT_LABEL = { equipamento:'Equipamento', material:'Material / Insumos', mao_de_obra:'Mão de obra', local:'Local / Infra', deslocamento:'Deslocamento', outro:'Outro' };
 function QuoteBuilder({leadId,open}){
   const { db, mutate, toast } = useStore();
   const lead = db.leads.find(l=>l.id===leadId);
@@ -866,23 +883,29 @@ function QuoteBuilder({leadId,open}){
     { id:uid('li'), category:'equipamento', description:'', amount:'' },
     { id:uid('li'), category:'mao_de_obra', description:'', amount:'' },
   ]);
+  const [sent,setSent] = useState(null); // { msg } após gerar o envio
   const total = items.reduce((s,i)=>s+(+i.amount||0),0);
-  const addItem = () => setItems([...items,{id:uid('li'),category:'local',description:'',amount:''}]);
+  const addItem = () => setItems([...items,{id:uid('li'),category:'material',description:'',amount:''}]);
   const upd = (id,k,v) => setItems(items.map(i=>i.id===id?{...i,[k]:v}:i));
   const del = id => setItems(items.filter(i=>i.id!==id));
+
+  const buildMsg = (clean,tot) => {
+    const lines = clean.map(i=>`• ${CAT_LABEL[i.category]}: ${i.description} — ${fmtBRL(i.amount)}`).join('\n');
+    return `Olá, ${lead.snapshotName}! Aqui é a EcoTherm.\n\nSegue o seu orçamento (${SERVICE_LABEL[lead.serviceType]}):\n\n${lines}\n\nTotal: ${fmtBRL(tot)}\nValidade: 10 dias.\nProtocolo: ${lead.protocol}\n\nQualquer dúvida, estou à disposição!`;
+  };
 
   const send = () => {
     const clean = items.filter(i=>i.description && +i.amount>0).map(i=>({...i,amount:+i.amount}));
     if(clean.length===0){ toast('Adicione ao menos um item válido.','warn'); return; }
+    const tot = clean.reduce((s,i)=>s+i.amount,0);
     mutate(d=>{
       const l = d.leads.find(x=>x.id===leadId); l.status='orcamento_enviado';
       let q = d.quotes.find(q=>q.leadId===leadId);
-      const payload = { items:clean, total:clean.reduce((s,i)=>s+i.amount,0), status:'enviado' };
+      const payload = { items:clean, total:tot, status:'enviado' };
       if(q){ Object.assign(q,payload); } else { d.quotes.push({ id:uid('quote'), tenantId:'eco', leadId, customerId:l.customerId||null, validUntil:addDays(nowISO(),10), createdAt:nowISO(), ...payload }); }
       return d;
     });
-    toast('Orçamento enviado ao cliente (simulado).');
-    open('leads',{leadId});
+    setSent({ msg: buildMsg(clean,tot) });
   };
 
   return (
@@ -891,14 +914,14 @@ function QuoteBuilder({leadId,open}){
       <h1 className="text-2xl font-extrabold mt-3">Orçamento — {lead?.snapshotName}</h1>
       <p className="text-slate-500 text-sm">Detalhe o serviço em itens. O cliente vê o breakdown — transparência gera confiança.</p>
 
-      <Card className="p-5 mt-5">
+      <Card className="p-4 sm:p-5 mt-5">
         <div className="space-y-3">
           {items.map(i=>(
             <div key={i.id} className="grid grid-cols-12 gap-2 items-center">
-              <div className="col-span-3"><Select value={i.category} onChange={e=>upd(i.id,'category',e.target.value)}>{Object.entries(CAT_LABEL).map(([v,l])=><option key={v} value={v}>{l}</option>)}</Select></div>
-              <div className="col-span-6"><Input value={i.description} onChange={e=>upd(i.id,'description',e.target.value)} placeholder="Descrição do item"/></div>
-              <div className="col-span-2"><Input type="number" value={i.amount} onChange={e=>upd(i.id,'amount',e.target.value)} placeholder="R$"/></div>
-              <div className="col-span-1 text-right"><button onClick={()=>del(i.id)} className="text-slate-300 hover:text-red-500 text-lg">×</button></div>
+              <div className="col-span-7 sm:col-span-3 sm:order-1"><Select value={i.category} onChange={e=>upd(i.id,'category',e.target.value)}>{Object.entries(CAT_LABEL).map(([v,l])=><option key={v} value={v}>{l}</option>)}</Select></div>
+              <div className="col-span-4 sm:col-span-2 sm:order-3"><Input type="number" value={i.amount} onChange={e=>upd(i.id,'amount',e.target.value)} placeholder="R$"/></div>
+              <div className="col-span-1 sm:order-4 text-right"><button onClick={()=>del(i.id)} aria-label="Remover" className="text-slate-300 hover:text-red-500 text-lg">×</button></div>
+              <div className="col-span-12 sm:col-span-6 sm:order-2"><Input value={i.description} onChange={e=>upd(i.id,'description',e.target.value)} placeholder="Descrição do item"/></div>
             </div>
           ))}
         </div>
@@ -909,9 +932,39 @@ function QuoteBuilder({leadId,open}){
           <div className="text-2xl font-extrabold brand-text">{fmtBRL(total)}</div>
         </div>
       </Card>
-      <div className="flex justify-end gap-2 mt-4">
+      <div className="flex flex-col sm:flex-row sm:justify-end gap-2 mt-4">
         <Btn variant="outline" onClick={()=>open('leads',{leadId})}>Cancelar</Btn>
-        <Btn onClick={send}><span className="inline-flex items-center gap-2"><Ic n="mail"/>Enviar ao cliente</span></Btn>
+        <Btn onClick={send}><span className="inline-flex items-center justify-center gap-2"><Ic n="mail"/>Enviar ao cliente</span></Btn>
+      </div>
+
+      {sent && <SendQuoteModal msg={sent.msg} phone={lead.snapshotPhone} email={lead.snapshotEmail}
+        onClose={()=>{ toast('Orçamento registrado como enviado.'); open('leads',{leadId}); }}/>}
+    </div>
+  );
+}
+
+function SendQuoteModal({msg,phone,email,onClose}){
+  const hasPhone = !!(phone||'').replace(/\D/g,'');
+  const hasEmail = !!email;
+  return (
+    <div className="fixed inset-0 bg-black/40 z-40 flex items-center justify-center p-4" onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()} className="bg-white rounded-2xl shadow-card max-w-lg w-full p-6 max-h-[90vh] overflow-auto">
+        <h3 className="text-lg font-bold">Enviar orçamento ao cliente</h3>
+        <p className="text-sm text-slate-500 mb-3">A mensagem já vai pronta com o breakdown. Escolha o canal — abre o app com o texto preenchido, é só confirmar o envio.</p>
+        <textarea readOnly value={msg} rows={8} className={inputCls+" text-xs bg-slate-50"}/>
+        <div className="grid sm:grid-cols-2 gap-2 mt-4">
+          <a href={hasPhone? waLink(phone,msg) : undefined} target="_blank" rel="noopener"
+             className={"px-4 py-2.5 rounded-xl text-sm font-semibold text-white text-center transition "+(hasPhone?'bg-green-500 hover:bg-green-600':'bg-slate-200 !text-slate-400 pointer-events-none')}>
+            <span className="inline-flex items-center gap-2"><Ic n="phone"/>Enviar por WhatsApp</span>
+          </a>
+          <a href={hasEmail? mailLink(email,'Orçamento EcoTherm',msg) : undefined}
+             className={"px-4 py-2.5 rounded-xl text-sm font-semibold text-center transition border "+(hasEmail?'border-aqua-300 text-aqua-700 hover:bg-aqua-100':'border-slate-200 text-slate-400 pointer-events-none')}>
+            <span className="inline-flex items-center gap-2"><Ic n="mail"/>Enviar por e-mail</span>
+          </a>
+        </div>
+        {!hasPhone && !hasEmail && <p className="text-xs text-red-500 mt-2">Este cliente não tem telefone nem e-mail cadastrado.</p>}
+        <div className="flex justify-end mt-5"><Btn variant="ghost" onClick={onClose}>Concluir</Btn></div>
+        <p className="text-[11px] text-slate-400 mt-3">No piloto o envio é por link direto (um toque abre o WhatsApp/e-mail já preenchido). O disparo 100% automático entra na próxima fase, com backend.</p>
       </div>
     </div>
   );
