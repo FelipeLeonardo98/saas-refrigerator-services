@@ -7,6 +7,7 @@
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.tailwindcss.com"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -43,7 +44,8 @@ const { useState, useEffect, useMemo, createContext, useContext } = React;
 /* ============================================================
    UTILIDADES
    ============================================================ */
-const uid = (p='id') => p + '_' + Math.random().toString(36).slice(2,9);
+const uid = () => (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+  : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.random()*16|0,v=c==='x'?r:(r&0x3|0x8);return v.toString(16);});
 const fmtBRL = n => (n||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 const fmtDate = d => d ? new Date(d).toLocaleDateString('pt-BR') : '—';
 const addDays = (d,n) => { const x=new Date(d); x.setDate(x.getDate()+n); return x.toISOString(); };
@@ -77,7 +79,7 @@ function estimarBTU({ areaM2=0, people=0, electronics=0, sunExposure='manha' }){
    SEED (Praia Grande / litoral — maresia encurta manutenção)
    ============================================================ */
 function seed(){
-  const tenantId = 'eco';
+  const tenantId = TENANT_ID;
   const C = (type,name,document,email,phone,bairro) =>
     ({ id:uid('cus'), tenantId, type, name, document, email, phone, bairro, createdAt:addDays(nowISO(),-220) });
 
@@ -176,18 +178,118 @@ function seed(){
 /* ============================================================
    STORE (localStorage)
    ============================================================ */
-const KEY = 'ecotherm_db_v1';
-function loadDB(){ try{ const raw=localStorage.getItem(KEY); if(raw) return JSON.parse(raw);}catch(e){} const s=seed(); localStorage.setItem(KEY,JSON.stringify(s)); return s; }
-function saveDB(db){ localStorage.setItem(KEY, JSON.stringify(db)); }
+// URL + publishable key são PÚBLICAS (a publishable key é feita para o browser,
+// protegida por RLS). Não é segredo — pode ficar no front.
+const SB_URL = 'https://drfbhcqumbowjzmykvdl.supabase.co';
+const SB_KEY = 'sb_publishable_Qn5N7S29qZoKUnfRO8yO6w_L4FIn4aX';
+const sb = window.supabase.createClient(SB_URL, SB_KEY);
+let TENANT_ID = 'eco';
+
+// mapeamento camelCase <-> snake_case (só chaves de topo; jsonb fica intacto)
+const toSnake = o => { const r={}; for(const k in o) r[k.replace(/[A-Z]/g,m=>'_'+m.toLowerCase())]=o[k]; return r; };
+const toCamel = o => { const r={}; for(const k in o) r[k.replace(/_([a-z])/g,(_,c)=>c.toUpperCase())]=o[k]; return r; };
+
+// chave no estado : nome da tabela, em ordem segura de FK
+const TABLES = [['customers','customers'],['sites','sites'],['equipment','equipment'],['leads','leads'],['quotes','quotes'],['serviceOrders','service_orders'],['reminders','reminders']];
+const rowOf = o => { const c={...o}; delete c.items; delete c.media; return toSnake(c); };
+const EMPTY = {tenant:null,customers:[],sites:[],equipment:[],leads:[],quotes:[],serviceOrders:[],reminders:[]};
+
+async function loadAll(){
+  const names=['tenants','customers','sites','equipment','leads','quotes','quote_line_items','service_orders','reminders','media'];
+  const res = await Promise.all(names.map(n=>sb.from(n).select('*')));
+  const bad = res.find(r=>r.error); if(bad) throw bad.error;
+  const [tenants,customers,sites,equipment,leads,quotes,lineItems,serviceOrders,reminders,media] = res.map(r=>r.data);
+  const tenant = tenants[0] ? toCamel(tenants[0]) : {id:'eco',name:'EcoTherm'};
+  TENANT_ID = tenant.id;
+  const mediaBy={}; media.forEach(m=>{ (mediaBy[m.owner_id]=mediaBy[m.owner_id]||[]).push({id:m.id,kind:m.kind,url:m.url}); });
+  const itemsBy={}; lineItems.forEach(li=>{ (itemsBy[li.quote_id]=itemsBy[li.quote_id]||[]).push(toCamel(li)); });
+  return {
+    tenant,
+    customers: customers.map(toCamel),
+    sites: sites.map(toCamel),
+    equipment: equipment.map(toCamel),
+    leads: leads.map(l=>{ const c=toCamel(l); c.media=mediaBy[l.id]||[]; return c; }),
+    quotes: quotes.map(q=>{ const c=toCamel(q); c.items=itemsBy[q.id]||[]; return c; }),
+    serviceOrders: serviceOrders.map(toCamel),
+    reminders: reminders.map(toCamel),
+  };
+}
+
+// sincroniza as diferenças entre dois estados para o Supabase
+async function syncDiff(prev, next){
+  for(const [key,table] of TABLES){                 // upserts (ordem de FK)
+    const p=prev[key]||[], n=next[key]||[];
+    const pBy=Object.fromEntries(p.map(r=>[r.id,r]));
+    const ups=n.filter(r=>{ const b=pBy[r.id]; return !b || JSON.stringify(b)!==JSON.stringify(r); }).map(rowOf);
+    if(ups.length){ const {error}=await sb.from(table).upsert(ups); if(error) throw error; }
+  }
+  for(const q of next.quotes||[]){                  // itens do orçamento
+    const b=(prev.quotes||[]).find(x=>x.id===q.id);
+    if(!b || JSON.stringify(b.items||[])!==JSON.stringify(q.items||[])){
+      await sb.from('quote_line_items').delete().eq('quote_id',q.id);
+      const rows=(q.items||[]).map(it=>({ id:it.id||uid(), quote_id:q.id, category:it.category, description:it.description, amount:it.amount }));
+      if(rows.length){ const {error}=await sb.from('quote_line_items').insert(rows); if(error) throw error; }
+    }
+  }
+  for(const l of next.leads||[]){                   // mídia de leads novos
+    if(!(prev.leads||[]).some(x=>x.id===l.id) && (l.media||[]).length){
+      const rows=l.media.map(m=>({ id:m.id||uid(), tenant_id:TENANT_ID, owner_type:'lead', owner_id:l.id, kind:m.kind, url:m.url }));
+      const {error}=await sb.from('media').insert(rows); if(error) throw error;
+    }
+  }
+  for(const [key,table] of [...TABLES].reverse()){   // deletes (ordem reversa)
+    const nBy=Object.fromEntries((next[key]||[]).map(r=>[r.id,true]));
+    for(const r of (prev[key]||[])) if(!nBy[r.id]){ const {error}=await sb.from(table).delete().eq('id',r.id); if(error) throw error; }
+  }
+}
 
 const Store = createContext(null);
 function useStore(){ return useContext(Store); }
 function StoreProvider({children}){
-  const [db,setDb] = useState(loadDB);
+  const [db,setDb] = useState(null);
+  const [bootErr,setBootErr] = useState(null);
   const [toasts,setToasts] = useState([]);
-  const mutate = fn => setDb(prev => { const next = fn(structuredClone(prev)); saveDB(next); return next; });
-  const toast = (msg,kind='ok') => { const id=uid('t'); setToasts(t=>[...t,{id,msg,kind}]); setTimeout(()=>setToasts(t=>t.filter(x=>x.id!==id)),3800); };
-  const reset = () => { localStorage.removeItem(KEY); const s=seed(); saveDB(s); setDb(s); toast('Dados resetados.'); };
+  const toast = (msg,kind='ok') => { const id=uid(); setToasts(t=>[...t,{id,msg,kind}]); setTimeout(()=>setToasts(t=>t.filter(x=>x.id!==id)),3800); };
+
+  useEffect(()=>{ (async()=>{
+    try{
+      let data = await loadAll();
+      if(data.customers.length===0){                 // 1ª vez: semeia o banco
+        const s = seed();
+        await syncDiff({...EMPTY, tenant:data.tenant}, s);
+        data = await loadAll();
+      }
+      setDb(data);
+    }catch(e){ console.error('[boot]',e); setBootErr(e.message||String(e)); }
+  })(); },[]);
+
+  const mutate = fn => setDb(prev => {
+    const next = fn(structuredClone(prev));
+    syncDiff(prev,next).catch(e=>{ console.error('[sync]',e); toast('Falha ao salvar no banco.','warn'); });
+    return next;
+  });
+
+  const reset = async () => {
+    try{
+      for(const t of ['media','quote_line_items','reminders','service_orders','quotes','leads','equipment','sites','customers'])
+        await sb.from(t).delete().neq('id','00000000-0000-0000-0000-000000000000');
+      const s = seed();
+      await syncDiff({...EMPTY, tenant:db.tenant}, s);
+      setDb(await loadAll());
+      toast('Dados resetados.');
+    }catch(e){ console.error('[reset]',e); toast('Falha ao resetar.','warn'); }
+  };
+
+  if(bootErr) return (
+    <div className="min-h-screen flex items-center justify-center p-6 text-center">
+      <div><div className="font-bold text-red-600">Não consegui conectar ao banco</div>
+      <div className="text-sm text-slate-500 mt-2 max-w-md break-words">{bootErr}</div></div>
+    </div>);
+  if(db===null) return (
+    <div className="min-h-screen flex items-center justify-center">
+      <div className="flex items-center gap-3 text-slate-400"><Logo size={34}/><span className="animate-pulse">Carregando…</span></div>
+    </div>);
+
   return <Store.Provider value={{db,mutate,toast,reset}}>
     {children}
     <div className="fixed bottom-4 right-4 z-50 space-y-2">
@@ -384,7 +486,7 @@ function QuoteForm({onDone,onCancel}){
     if(!contact.name || (!contact.email && !contact.phone)){ toast('Informe nome e ao menos um contato.','warn'); return; }
     const protocol = 'ECO-' + Math.random().toString(36).slice(2,6).toUpperCase();
     const lead = {
-      id:uid('lead'), tenantId:'eco', protocol, customerId:null,
+      id:uid('lead'), tenantId:TENANT_ID, protocol, customerId:null,
       snapshotName:contact.name, snapshotEmail:contact.email, snapshotPhone:contact.phone, snapshotType:contact.type,
       serviceType,
       environment: serviceType==='instalacao'
@@ -799,7 +901,7 @@ function LeadDetail({leadId,open}){
     mutate(d=>{
       const l = d.leads.find(x=>x.id===leadId);
       if(!l.customerId){
-        const c = { id:uid('cus'), tenantId:'eco', type:l.snapshotType, name:l.snapshotName, document:'', email:l.snapshotEmail, phone:l.snapshotPhone, bairro:'', createdAt:nowISO() };
+        const c = { id:uid('cus'), tenantId:TENANT_ID, type:l.snapshotType, name:l.snapshotName, document:'', email:l.snapshotEmail, phone:l.snapshotPhone, bairro:'', createdAt:nowISO() };
         d.customers.push(c); l.customerId=c.id;
       }
       l.status='qualificado';
@@ -902,7 +1004,7 @@ function QuoteBuilder({leadId,open}){
       const l = d.leads.find(x=>x.id===leadId); l.status='orcamento_enviado';
       let q = d.quotes.find(q=>q.leadId===leadId);
       const payload = { items:clean, total:tot, status:'enviado' };
-      if(q){ Object.assign(q,payload); } else { d.quotes.push({ id:uid('quote'), tenantId:'eco', leadId, customerId:l.customerId||null, validUntil:addDays(nowISO(),10), createdAt:nowISO(), ...payload }); }
+      if(q){ Object.assign(q,payload); } else { d.quotes.push({ id:uid('quote'), tenantId:TENANT_ID, leadId, customerId:l.customerId||null, validUntil:addDays(nowISO(),10), createdAt:nowISO(), ...payload }); }
       return d;
     });
     setSent({ msg: buildMsg(clean,tot) });
@@ -1107,14 +1209,14 @@ function ConcludeModal({order,customer,onClose}){
       // cria/atualiza equipamento
       let equip = d.equipment.find(e=>e.id===o.equipmentId);
       if(!equip){
-        equip = { id:uid('eq'), tenantId:'eco', customerId:customer.id, siteId:null, brand:eq.brand, model:eq.model, btu:+eq.btu||0, type:eq.type,
+        equip = { id:uid('eq'), tenantId:TENANT_ID, customerId:customer.id, siteId:null, brand:eq.brand, model:eq.model, btu:+eq.btu||0, type:eq.type,
           installedAt:nowISO(), warrantyUntil:addDays(nowISO(),365), lastMaintenanceAt:nowISO(), maintenanceIntervalDays:+eq.maintenanceIntervalDays||120, status:'ativo' };
         d.equipment.push(equip); o.equipmentId=equip.id;
       } else {
         equip.lastMaintenanceAt=nowISO(); equip.maintenanceIntervalDays=+eq.maintenanceIntervalDays||equip.maintenanceIntervalDays;
       }
       if(rem.enabled){
-        d.reminders.push({ id:uid('rem'), tenantId:'eco', customerId:customer.id, equipmentId:equip.id, serviceOrderId:o.id,
+        d.reminders.push({ id:uid('rem'), tenantId:TENANT_ID, customerId:customer.id, equipmentId:equip.id, serviceOrderId:o.id,
           dueAt: nextMaint(equip), leadDays:+rem.leadDays, channel:rem.channel, status:'agendado' });
       }
       return d;
