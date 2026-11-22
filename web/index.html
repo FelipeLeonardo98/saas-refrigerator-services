@@ -1296,20 +1296,29 @@ function App(){
   );
 }
 
+// Senha boba e temporária do piloto. NÃO é segurança real (fica visível no
+// código-fonte do site estático) — só barra acesso casual. Troque aqui à vontade.
+const PROVIDER_PASS = '123banana';
 function Login({onLogin,onBack}){
+  const [pass,setPass] = useState('');
+  const [erro,setErro] = useState(false);
+  const entrar = () => { if(pass.trim()===PROVIDER_PASS){ setErro(false); onLogin(); } else { setErro(true); } };
   return (
     <div className="min-h-screen flex items-center justify-center p-4 brand-gradient">
       <Card className="p-8 max-w-sm w-full">
         <div className="flex justify-center"><Logo/></div>
         <h1 className="text-xl font-bold text-center mt-5">Área do prestador</h1>
-        <p className="text-sm text-slate-500 text-center mt-1">Acesso de demonstração</p>
+        <p className="text-sm text-slate-500 text-center mt-1">Acesso restrito</p>
         <div className="mt-5 space-y-3">
-          <Field label="E-mail"><Input defaultValue="contato@ecotherm.com.br"/></Field>
-          <Field label="Senha"><Input type="password" defaultValue="demo1234"/></Field>
-          <Btn className="w-full" onClick={onLogin}>Entrar</Btn>
+          <Field label="Senha">
+            <Input type="password" value={pass}
+              onChange={e=>{ setPass(e.target.value); setErro(false); }}
+              onKeyDown={e=>e.key==='Enter'&&entrar()} placeholder="Digite a senha"/>
+          </Field>
+          {erro && <p className="text-sm text-red-500 -mt-1">Senha incorreta.</p>}
+          <Btn className="w-full" onClick={entrar}>Entrar</Btn>
           <Btn variant="ghost" className="w-full" onClick={onBack}>Voltar ao site</Btn>
         </div>
-        <p className="text-xs text-slate-400 text-center mt-4">Login simulado — qualquer valor entra.</p>
       </Card>
     </div>
   );
