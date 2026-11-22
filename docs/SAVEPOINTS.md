@@ -80,3 +80,26 @@ PoC Fase 1 no ar e funcional no link público.
 - Ligar o front ao Supabase (migrar camada localStorage -> supabase-js).
 - Bucket de Storage p/ mídia.
 - Seed inicial no banco (opcional).
+
+---
+
+## Savepoint 004 — 2026-11-22 — Front ligado ao Supabase + verificação
+
+**Feito**
+- Supabase provisionado pelo usuário (projeto ecotherm-crm). schema.sql + grants
+  rodados; credenciais públicas (URL + publishable key) no front.
+- Camada de dados migrada de localStorage -> Supabase (loadAll + syncDiff).
+- Seed inicial inserido no banco na 1a carga.
+- Testado ponta a ponta no link público, conferindo cada escrita no banco:
+  seed, envio de lead (cliente), qualificar (cria cliente + update lead),
+  concluir OS (cria lembrete + updates). Insert/update/multi-tabela OK.
+  Coerência cross-device confirmada (lead do cliente visível no painel).
+
+**Observação**
+- Console mostra um 401 isolado no boot (provável probe do módulo de auth do
+  supabase-js sem sessão); não afeta dados — todas as escritas persistem.
+
+**Próximos passos**
+- (Opcional) login real do prestador via Supabase Auth + RLS por usuário.
+- Bucket de Storage p/ fotos (hoje data URL em text).
+- E-mail automático (Resend) / WhatsApp.
